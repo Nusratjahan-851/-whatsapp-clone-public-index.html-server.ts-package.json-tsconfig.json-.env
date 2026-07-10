@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "Chat": {
+      "title": "Chat",
+      "description": "WhatsApp chat info",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "unreadCount": { "type": "number" },
+        "conversationTimestamp": { "type": "number" }
+      }
+    },
+    "Contact": {
+      "title": "Contact",
+      "description": "WhatsApp contact info",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "verifiedName": { "type": "string" }
+      }
+    },
+    "MessagesHistory": {
+      "title": "MessagesHistory",
+      "description": "WhatsApp message history per chat",
+      "type": "object",
+      "properties": {
+        "messages": { "type": "array" }
+      }
+    }
+  },
+  "firestore": {
+    "accounts/{phone}/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "Chats collection for account backup"
+    },
+    "accounts/{phone}/contacts/{contactId}": {
+      "schema": "Contact",
+      "description": "Contacts collection for account backup"
+    },
+    "accounts/{phone}/messages/{chatId}": {
+      "schema": "MessagesHistory",
+      "description": "Message history for account backup"
+    }
+  }
+}

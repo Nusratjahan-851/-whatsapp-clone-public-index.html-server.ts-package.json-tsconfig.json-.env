@@ -1,0 +1,24 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Backend unauthenticated access to accounts
+    match /accounts/{phone} {
+      allow read, write, delete: if true;
+      
+      match /chats/{chatId} {
+        allow read, write, delete: if true;
+      }
+      match /contacts/{contactId} {
+        allow read, write, delete: if true;
+      }
+      match /messages/{chatId} {
+        allow read, write, delete: if true;
+      }
+    }
+  }
+}

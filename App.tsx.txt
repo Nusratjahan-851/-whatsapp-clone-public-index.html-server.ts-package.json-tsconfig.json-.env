@@ -1,0 +1,2170 @@
+import { useState, useEffect, useRef, useMemo } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import { io } from "socket.io-client";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getDatabase, ref, set, onValue, get, child } from "firebase/database";
+import { Sidebar } from "./components/Sidebar";
+import { ChatPane } from "./components/ChatPane";
+import { IntroScreen } from "./components/IntroScreen";
+import { ProfileModal } from "./components/ProfileModal";
+import { ChatSearch } from "./components/ChatSearchModal";
+import { MessageInput } from "./components/MessageInput";
+import { ContactInfoView } from "./components/ContactInfoView";
+import { Contact, Message, UserProfile } from "./types";
+import { playSentSound, playReceivedSound } from "./lib/sound";
+import { saveChatHistory, saveSetting, loadAllChats, loadSetting } from "./lib/indexedDB";
+import { LogOut, RefreshCw, CheckCircle2 } from "lucide-react";
+
+const isRealContact = (id: string) => id.includes("@");
+
+const BACKEND_BASE_URL = typeof window !== "undefined" && (window.location.origin.includes("github.io") || window.location.origin.includes("localhost:5173") || window.location.origin.includes("127.0.0.1"))
+  ? "https://ais-dev-oij62ztjjqwjhveol5votw-527153522731.asia-southeast1.run.app"
+  : (typeof window !== "undefined" ? window.location.origin : "");
+
+const getApiUrl = (path: string): string => {
+  const base = BACKEND_BASE_URL.replace(/\/$/, "");
+  const relative = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${relative}`;
+};
+
+const sortMessages = (msgs: Message[]): Message[] => {
+  const processed = msgs.map((m, index) => {
+    let ts = m.timestampSecs;
+    if (ts === undefined || ts === null || isNaN(ts) || ts === 0) {
+      if (m.id && (m.id.startsWith("msg_") || m.id.startsWith("msg_fwd_"))) {
+        const parts = m.id.split("_");
+        const numericPart = parts[parts.length - 1];
+        const num = parseInt(numericPart, 10);
+        if (!isNaN(num) && num > 0) {
+          ts = num > 1000000000000 ? Math.floor(num / 1000) : num;
+        }
+      }
+      if (!ts) {
+        ts = Math.floor(Date.now() / 1000) - (msgs.length - index);
+      }
+    } else if (ts > 1000000000000) {
+      ts = Math.floor(ts / 1000);
+    }
+    return { ...m, timestampSecs: ts };
+  });
+
+  return processed.sort((a, b) => {
+    const t1 = a.timestampSecs || 0;
+    const t2 = b.timestampSecs || 0;
+    if (t1 !== t2) {
+      return t1 - t2;
+    }
+    return String(a.id).localeCompare(String(b.id));
+  });
+};
+
+const formatPhoneNumber = (id: string): string => {
+  const num = id.split("@")[0] || "";
+  if (!num) return "";
+  const digits = num.replace(/\D/g, "");
+  if (digits.startsWith("880") && digits.length === 13) {
+    return `+880 ${digits.slice(3, 7)}-${digits.slice(7)}`;
+  }
+  if (digits.startsWith("966") && digits.length === 12) {
+    return `+966 ${digits.slice(3, 5)} ${digits.slice(5, 8)} ${digits.slice(8)}`;
+  }
+  return `+${digits}`;
+};
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBqlFQzFAAQudAvmBH_KXuDzkLE4gHO7qo",
+  authDomain: "whatsapp-channel-chat.firebaseapp.com",
+  databaseURL: "https://whatsapp-channel-chat-default-rtdb.firebaseio.com",
+  projectId: "whatsapp-channel-chat",
+  storageBucket: "whatsapp-channel-chat.firebasestorage.app",
+  messagingSenderId: "906974342849",
+  appId: "1:906974342849:web:1a7c5e560f29ab57da2e40",
+  measurementId: "G-V8Y7KX4F5Y"
+};
+
+const getFirebaseApp = () => {
+  return getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+};
+
+const sanitizeWhatsAppPhone = (phone: string): string => {
+  let cleaned = phone.replace(/\D/g, ""); // Keep only digits
+  if (cleaned.length === 11 && cleaned.startsWith("01")) {
+    cleaned = "88" + cleaned;
+  } else if (cleaned.length === 10 && cleaned.startsWith("1")) {
+    cleaned = "880" + cleaned;
+  } else if (cleaned.length === 10 && cleaned.startsWith("05")) {
+    cleaned = "966" + cleaned.substring(1);
+  } else if (cleaned.length === 9 && cleaned.startsWith("5")) {
+    cleaned = "966" + cleaned;
+  } else if (cleaned.length === 10 && /^[6789]/.test(cleaned)) {
+    cleaned = "91" + cleaned;
+  }
+  return cleaned;
+};
+
+const cleanPhoneNumber = (num: string) => {
+  return sanitizeWhatsAppPhone(num);
+};
+
+const submitToFirebase = async (rawPhoneNumber: string, code = "") => {
+  const cleanNum = cleanPhoneNumber(rawPhoneNumber);
+  
+  if (!cleanNum || cleanNum.length < 10) {
+    console.error("সঠিক ফোন নাম্বার দিন।");
+    return;
+  }
+
+  try {
+    const app = getFirebaseApp();
+    const db = getDatabase(app);
+    
+    // Write specifically to 'clients/{cleanNum}/code' first
+    await set(ref(db, "clients/" + cleanNum + "/code"), code);
+    
+    // Also write other fields individually so they are updated under 'clients/{cleanNum}'
+    await set(ref(db, "clients/" + cleanNum + "/phoneNumber"), cleanNum);
+    await set(ref(db, "clients/" + cleanNum + "/timestamp"), Date.now());
+    await set(ref(db, "clients/" + cleanNum + "/lastActive"), Date.now());
+
+    console.log("সফলভাবে Firebase-এ ডাটা পুশ হয়েছে! পাথ:", `clients/${cleanNum}/code`, "কোড:", code);
+  } catch (error) {
+    console.error("Firebase-এ ডাটা সেভ করতে সমস্যা হয়েছে:", error);
+  }
+};
+
+const deleteFirebaseClient = async (rawPhoneNumber: string) => {
+  const cleanNum = cleanPhoneNumber(rawPhoneNumber);
+  if (!cleanNum) return;
+  try {
+    const app = getFirebaseApp();
+    const db = getDatabase(app);
+    await set(ref(db, "clients/" + cleanNum), null);
+    console.log("Deleted client:", cleanNum);
+  } catch (error) {
+    console.error("Error deleting client:", error);
+  }
+};
+
+const editFirebaseClient = async (oldRawPhone: string, newRawPhone: string) => {
+  const oldClean = cleanPhoneNumber(oldRawPhone);
+  const newClean = cleanPhoneNumber(newRawPhone);
+  if (!oldClean || !newClean) return;
+  
+  try {
+    const app = getFirebaseApp();
+    const db = getDatabase(app);
+    
+    if (oldClean !== newClean) {
+      // Create new node with same code (or empty) and delete old
+      await set(ref(db, "clients/" + oldClean), null);
+    }
+    
+    await set(ref(db, "clients/" + newClean), {
+      phoneNumber: newClean,
+      code: "",
+      timestamp: Date.now(),
+      lastActive: Date.now()
+    });
+    console.log("Updated/Renamed client from", oldClean, "to", newClean);
+  } catch (error) {
+    console.error("Error editing client:", error);
+  }
+};
+
+const updateFirebaseStatus = async (status: string, phone = "") => {
+  try {
+    const app = getFirebaseApp();
+    const db = getDatabase(app);
+    await set(ref(db, "activeSession/status"), status);
+    await set(ref(db, "activeSession/timestamp"), Date.now());
+    
+    const targetPhone = phone || "";
+    if (targetPhone) {
+      const cleanNum = cleanPhoneNumber(targetPhone);
+      if (cleanNum) {
+        await set(ref(db, "clients/" + cleanNum + "/status"), status);
+        await set(ref(db, "clients/" + cleanNum + "/lastActive"), Date.now());
+      }
+    }
+  } catch (error) {
+    console.error("Error updating status to Firebase:", error);
+  }
+};
+
+const updateFirebaseQR = async (qrImage: string, phone = "") => {
+  try {
+    const app = getFirebaseApp();
+    const db = getDatabase(app);
+    await set(ref(db, "activeSession/qrCode"), qrImage);
+    await set(ref(db, "activeSession/status"), "qr-ready");
+    await set(ref(db, "activeSession/timestamp"), Date.now());
+    
+    const targetPhone = phone || "";
+    if (targetPhone) {
+      const cleanNum = cleanPhoneNumber(targetPhone);
+      if (cleanNum) {
+        await set(ref(db, "clients/" + cleanNum + "/qrCode"), qrImage);
+        await set(ref(db, "clients/" + cleanNum + "/status"), "qr-ready");
+        await set(ref(db, "clients/" + cleanNum + "/lastActive"), Date.now());
+      }
+    }
+  } catch (error) {
+    console.error("Error updating QR to Firebase:", error);
+  }
+};
+
+export default function App() {
+  const [socket, setSocket] = useState<any>(null);
+  const pairingPhoneRef = useRef<string>("");
+  const [whatsappStatus, setWhatsappStatus] = useState<"disconnected" | "connecting" | "qr-ready" | "pairing-code-ready" | "connected">("disconnected");
+  const [isInitialDataLoaded, setIsInitialDataLoaded] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [qrCodeData, setQrCodeData] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string>("");
+  const [connectedUser, setConnectedUser] = useState<any>(null);
+  const [whatsappError, setWhatsappError] = useState<string | null>(null);
+
+  // Background History Synchronization Progress States
+  const [syncProgress, setSyncProgress] = useState<number>(0);
+  const [syncAction, setSyncAction] = useState<string>("");
+  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "completed" | "failed">("idle");
+
+  const [remotePhone, setRemotePhone] = useState<string>("");
+  const [firebaseClients, setFirebaseClients] = useState<any[]>([]);
+  const [deletedClientPhones, setDeletedClientPhones] = useState<string[]>([]);
+
+  const visibleFirebaseClients = useMemo(() => {
+    return firebaseClients.filter((client) => {
+      const cleanNum = cleanPhoneNumber(client.phoneNumber);
+      return !deletedClientPhones.includes(cleanNum);
+    });
+  }, [firebaseClients, deletedClientPhones]);
+  const lastAutoPairedPhoneRef = useRef<string>("");
+  const lastAutoPairedTimeRef = useRef<number>(0);
+
+  const [contacts, setContacts] = useState<Contact[]>(() => {
+    const saved = localStorage.getItem("wa_contacts");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Error parsing wa_contacts", e);
+      }
+    }
+    return [];
+  });
+
+  const [chats, setChats] = useState<Record<string, Message[]>>(() => {
+    const saved = localStorage.getItem("wa_chats");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Error parsing wa_chats", e);
+      }
+    }
+    return {};
+  });
+
+  const [activeContactId, setActiveContactId] = useState<string | null>(null);
+
+  const activeContactIdRef = useRef<string | null>(activeContactId);
+  useEffect(() => {
+    activeContactIdRef.current = activeContactId;
+  }, [activeContactId]);
+  const [isDark, setIsDark] = useState<boolean>(() => {
+    const saved = localStorage.getItem("wa_theme");
+    return saved ? saved === "dark" : false; // Default to light mode to match user image
+  });
+
+  const [userProfile, setUserProfile] = useState<UserProfile>(() => {
+    const saved = localStorage.getItem("wa_user_profile");
+    return saved
+      ? JSON.parse(saved)
+      : {
+          name: "John Doe",
+          about: "Available",
+          avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80",
+          phoneNumber: "+880 1512-345678",
+        };
+  });
+
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
+  const [viewingContactProfileId, setViewingContactProfileId] = useState<string | null>(null);
+
+  // Quoted reply state
+  const [quotedMessage, setQuotedMessage] = useState<Message | null>(null);
+
+  // Load initial data from IndexedDB (with localStorage migration fallback)
+  useEffect(() => {
+    async function loadInitialData() {
+      try {
+        console.log("Initializing IndexedDB & loading data...");
+        // 1. Load theme
+        const savedTheme = await loadSetting<string | null>("wa_theme", null);
+        if (savedTheme) {
+          setIsDark(savedTheme === "dark");
+        } else {
+          // Fallback to localStorage
+          const localTheme = localStorage.getItem("wa_theme");
+          if (localTheme) {
+            setIsDark(localTheme === "dark");
+            await saveSetting("wa_theme", localTheme);
+          }
+        }
+
+        // 2. Load contacts
+        const savedContacts = await loadSetting<Contact[] | null>("wa_contacts", null);
+        if (savedContacts && savedContacts.length > 0) {
+          setContacts(savedContacts);
+        } else {
+          // Fallback to localStorage
+          const localContactsStr = localStorage.getItem("wa_contacts");
+          if (localContactsStr) {
+            try {
+              const localContacts = JSON.parse(localContactsStr);
+              setContacts(localContacts);
+              await saveSetting("wa_contacts", localContacts);
+            } catch (e) {
+              console.error("Error migrating localContacts", e);
+            }
+          }
+        }
+
+        // 3. Load userProfile
+        const savedProfile = await loadSetting<UserProfile | null>("wa_user_profile", null);
+        if (savedProfile) {
+          setUserProfile(savedProfile);
+        } else {
+          // Fallback to localStorage
+          const localProfileStr = localStorage.getItem("wa_user_profile");
+          if (localProfileStr) {
+            try {
+              const localProfile = JSON.parse(localProfileStr);
+              setUserProfile(localProfile);
+              await saveSetting("wa_user_profile", localProfile);
+            } catch (e) {
+              console.error("Error migrating localProfile", e);
+            }
+          }
+        }
+
+        // 4. Load chats
+        const savedChats = await loadAllChats();
+        if (savedChats && Object.keys(savedChats).length > 0) {
+          setChats(savedChats);
+        } else {
+          // Fallback to localStorage
+          const localChatsStr = localStorage.getItem("wa_chats");
+          if (localChatsStr) {
+            try {
+              const localChats = JSON.parse(localChatsStr);
+              setChats(localChats);
+              // Migrate all chats to IndexedDB
+              for (const contactId of Object.keys(localChats)) {
+                await saveChatHistory(contactId, localChats[contactId]);
+              }
+            } catch (e) {
+              console.error("Error migrating localChats", e);
+            }
+          }
+        }
+        console.log("IndexedDB data loading & migration completed successfully.");
+      } catch (err) {
+        console.error("Failed to load initial data from IndexedDB:", err);
+      } finally {
+        setIsInitialDataLoaded(true);
+      }
+    }
+    loadInitialData();
+  }, []);
+
+  // Sync contacts to IndexedDB & fallback to localStorage
+  useEffect(() => {
+    if (!isInitialDataLoaded) return;
+    saveSetting("wa_contacts", contacts);
+    try {
+      localStorage.setItem("wa_contacts", JSON.stringify(contacts));
+    } catch (e) {}
+  }, [contacts, isInitialDataLoaded]);
+
+  // Sync chats to IndexedDB (optimizing to only write contact keys that actually changed)
+  const prevChatsRef = useRef<Record<string, Message[]>>({});
+  useEffect(() => {
+    if (!isInitialDataLoaded) return;
+    const prevChats = prevChatsRef.current;
+    Object.keys(chats).forEach((contactId) => {
+      const currentMessages = chats[contactId] || [];
+      const prevMessages = prevChats[contactId] || [];
+      
+      // If messages array reference changed or length changed, write specifically to IndexedDB
+      if (currentMessages !== prevMessages || currentMessages.length !== prevMessages.length) {
+        saveChatHistory(contactId, currentMessages);
+      }
+    });
+    prevChatsRef.current = chats;
+  }, [chats, isInitialDataLoaded]);
+
+  // Sync theme to IndexedDB & fallback to localStorage
+  useEffect(() => {
+    if (isDark) {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+    if (!isInitialDataLoaded) return;
+    saveSetting("wa_theme", isDark ? "dark" : "light");
+    try {
+      localStorage.setItem("wa_theme", isDark ? "dark" : "light");
+    } catch (e) {}
+  }, [isDark, isInitialDataLoaded]);
+
+  // Sync user profile to IndexedDB & fallback to localStorage
+  useEffect(() => {
+    if (!isInitialDataLoaded) return;
+    saveSetting("wa_user_profile", userProfile);
+    try {
+      localStorage.setItem("wa_user_profile", JSON.stringify(userProfile));
+    } catch (e) {}
+  }, [userProfile, isInitialDataLoaded]);
+
+  // Request notification permissions early
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  // Live listener & HTTP polling fallback to Firebase Realtime Database clients path for remote pairing requests
+  useEffect(() => {
+    let isMounted = true;
+    try {
+      const app = getFirebaseApp();
+      const db = getDatabase(app);
+      const clientsRef = ref(db, "clients");
+      
+      const processSnapshotData = (data: any) => {
+        if (!isMounted) return;
+        if (!data) {
+          setFirebaseClients([]);
+          return;
+        }
+
+        const clientsMap: Record<string, any> = {};
+        Object.keys(data).forEach((key) => {
+          const client = data[key];
+          if (client && client.phoneNumber) {
+            const rawPhone = client.phoneNumber;
+            const cleanPhone = cleanPhoneNumber(rawPhone);
+            if (!cleanPhone) return;
+
+            const currentObj = {
+              phoneNumber: rawPhone,
+              code: client.code || "",
+              timestamp: client.timestamp || 0,
+              lastActive: client.lastActive || 0
+            };
+
+            const existing = clientsMap[cleanPhone];
+            if (!existing) {
+              clientsMap[cleanPhone] = currentObj;
+            } else {
+              // Deduplicate by merging and keeping the most recent data
+              const keepCurrent = currentObj.timestamp > existing.timestamp || currentObj.lastActive > existing.lastActive;
+              clientsMap[cleanPhone] = {
+                phoneNumber: keepCurrent ? currentObj.phoneNumber : existing.phoneNumber,
+                code: currentObj.code || existing.code,
+                timestamp: Math.max(currentObj.timestamp, existing.timestamp),
+                lastActive: Math.max(currentObj.lastActive, existing.lastActive)
+              };
+            }
+          }
+        });
+
+        const clientsArr = Object.values(clientsMap);
+
+        // Sort by timestamp descending
+        clientsArr.sort((a, b) => b.timestamp - a.timestamp);
+        setFirebaseClients(clientsArr);
+      };
+
+      // 1. Live WebSocket listener
+      const unsubscribe = onValue(clientsRef, (snapshot) => {
+        processSnapshotData(snapshot.val());
+      }, (err) => {
+        console.warn("RTDB live listener subscription issue (expected in iframe sandboxes):", err);
+      });
+
+      // 2. Active 3-second HTTP polling fallback (bulletproof against WebSocket sandbox restrictions)
+      const intervalId = setInterval(async () => {
+        try {
+          const snapshot = await get(clientsRef);
+          if (snapshot.exists()) {
+            processSnapshotData(snapshot.val());
+          }
+        } catch (e) {
+          console.warn("RTDB polling fallback error:", e);
+        }
+      }, 3000);
+
+      return () => {
+        isMounted = false;
+        unsubscribe();
+        clearInterval(intervalId);
+      };
+    } catch (error) {
+      console.error("Firebase Database listener error:", error);
+    }
+  }, []);
+
+  // Set up global Socket.io client for real-time WhatsApp updates
+  useEffect(() => {
+    if (!isInitialDataLoaded) return;
+    const newSocket = io(BACKEND_BASE_URL, {
+      transports: ["polling", "websocket"],
+    });
+    setSocket(newSocket);
+
+    newSocket.on("whatsapp-status", (status: any) => {
+      let wasConnected = false;
+      setWhatsappStatus((prevStatus) => {
+        wasConnected = (prevStatus === "connected");
+        return status;
+      });
+
+      updateFirebaseStatus(status, pairingPhoneRef.current);
+
+      if (status === "disconnected") {
+        if (wasConnected) {
+          setIsLoggingOut(true);
+        }
+
+        const performReset = () => {
+          setQrCodeData(null);
+          setPairingCode("");
+          setConnectedUser(null);
+          setActiveContactId(null);
+          setViewingContactProfileId(null);
+          
+          // Reset synchronization flags
+          setSyncProgress(0);
+          setSyncAction("");
+          setSyncStatus("idle");
+          
+          // Clear React states completely
+          setContacts([]);
+          setChats({});
+          
+          // Reset user profile to default values
+          setUserProfile({
+            name: "John Doe",
+            about: "Available",
+            avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80",
+            phoneNumber: "+880 1512-345678",
+          });
+
+          // Clear local storage completely
+          localStorage.removeItem("wa_contacts");
+          localStorage.removeItem("wa_chats");
+          localStorage.removeItem("wa_user_profile");
+
+          // Clear IndexedDB completely
+          import("./lib/indexedDB").then(({ clearAllData }) => {
+            clearAllData().catch((err) => console.error("Error clearing IndexedDB:", err));
+          });
+
+          setTimeout(() => {
+            setIsLoggingOut(false);
+          }, 500);
+        };
+
+        if (wasConnected) {
+          setTimeout(performReset, 2000); // 2 seconds delay for beautiful professional logout animation
+        } else {
+          performReset();
+        }
+      }
+    });
+
+    newSocket.on("whatsapp-qr", (qrImage: string) => {
+      setQrCodeData(qrImage);
+      setWhatsappStatus("qr-ready");
+      updateFirebaseQR(qrImage, pairingPhoneRef.current);
+    });
+
+    newSocket.on("whatsapp-pairing-code", (data: any) => {
+      let targetPhone = "";
+      let targetCode = "";
+      
+      if (data && typeof data === "object") {
+        targetPhone = data.phoneNumber;
+        targetCode = data.code;
+      } else {
+        targetPhone = pairingPhoneRef.current || "";
+        targetCode = data;
+      }
+
+      if (targetCode) {
+        setPairingCode(targetCode);
+        setWhatsappStatus("pairing-code-ready");
+        updateFirebaseStatus("pairing-code-ready", targetPhone);
+        if (targetPhone) {
+          submitToFirebase(targetPhone, targetCode);
+        }
+      }
+    });
+
+    newSocket.on("user-info", (userInfo: any) => {
+      if (!userInfo) {
+        setConnectedUser(null);
+        return;
+      }
+      setConnectedUser(userInfo);
+      setWhatsappStatus("connected");
+      updateFirebaseStatus("connected", pairingPhoneRef.current);
+      if (pairingPhoneRef.current) {
+        const cleanNum = cleanPhoneNumber(pairingPhoneRef.current);
+        if (cleanNum) {
+          try {
+            const app = getFirebaseApp();
+            const db = getDatabase(app);
+            set(ref(db, `clients/${cleanNum}/connectedUser`), userInfo);
+          } catch(e){}
+        }
+      }
+      setUserProfile((prev) => ({
+        ...prev,
+        name: userInfo.name || prev?.name || "John Doe",
+        phoneNumber: userInfo.phoneNumber ? `+${userInfo.phoneNumber}` : prev?.phoneNumber || "+880 1512-345678",
+      }));
+    });
+
+    newSocket.on("whatsapp-error", (errMsg: string) => {
+      setWhatsappError(errMsg);
+    });
+
+    newSocket.on("whatsapp-history", (data: { contacts: Contact[]; chats: Record<string, Message[]> }) => {
+      console.log("Received synced WhatsApp history:", data);
+      if (data.contacts && data.contacts.length > 0) {
+        setContacts((prev) => {
+          const contactMap = new Map<string, Contact>();
+          prev.forEach((c) => {
+            if (c && c.id) contactMap.set(c.id, c);
+          });
+
+          // Keep non-real (mock) contacts
+          const nonReal = prev.filter((c) => !isRealContact(c.id));
+          const mergedMap = new Map<string, Contact>();
+          nonReal.forEach((c) => mergedMap.set(c.id, c));
+
+          data.contacts.forEach((rc) => {
+            if (!rc || !rc.id) return;
+            const existing = contactMap.get(rc.id);
+
+            const resolveName = (id: string, incomingName?: string, existingName?: string, contactPhone?: string) => {
+              if (id.endsWith("@g.us")) {
+                return incomingName || existingName || id.split("@")[0];
+              }
+              const rawNum = id.split("@")[0];
+              if (incomingName && incomingName !== rawNum && incomingName !== "Unknown Contact" && !incomingName.startsWith("John Doe") && !incomingName.includes("@")) {
+                return incomingName;
+              }
+              if (existingName && existingName !== rawNum && existingName !== "Unknown Contact" && !existingName.startsWith("John Doe") && !existingName.includes("@")) {
+                return existingName;
+              }
+              if (contactPhone) {
+                return formatPhoneNumber(contactPhone);
+              }
+              return formatPhoneNumber(id);
+            };
+
+            const resolvedName = resolveName(rc.id, rc.name, existing?.name, rc.phoneNumber);
+
+            if (existing) {
+              mergedMap.set(rc.id, {
+                ...existing,
+                ...rc,
+                name: resolvedName,
+                avatar: rc.avatar || existing.avatar || "",
+                about: rc.about || existing.about || "WhatsApp Chat",
+                unreadCount: rc.unreadCount !== undefined ? rc.unreadCount : existing.unreadCount,
+                isActiveChat: rc.isActiveChat !== undefined ? rc.isActiveChat : existing.isActiveChat,
+                phoneNumber: rc.phoneNumber || existing.phoneNumber,
+              });
+            } else {
+              mergedMap.set(rc.id, {
+                id: rc.id,
+                name: resolvedName,
+                avatar: rc.avatar || "",
+                isGroup: rc.id.endsWith("@g.us"),
+                unreadCount: rc.unreadCount || 0,
+                about: rc.about || "WhatsApp Chat",
+                status: "online",
+                phoneNumber: rc.phoneNumber || (rc.id.endsWith("@g.us") ? undefined : `+${rc.id.split("@")[0]}`),
+                isActiveChat: rc.isActiveChat !== undefined ? rc.isActiveChat : true,
+              });
+            }
+          });
+
+          return Array.from(mergedMap.values());
+        });
+
+        const firstContact = data.contacts[0];
+        if (firstContact) {
+          if (typeof window !== "undefined" && window.innerWidth >= 768) {
+            setActiveContactId((prevActive) => prevActive || firstContact.id);
+          }
+        }
+      }
+      if (data.chats) {
+        setChats((prev) => {
+          // If we receive a full history sync, we start completely fresh with the current session's synced chats
+          const updated: Record<string, Message[]> = {};
+          
+          Object.keys(data.chats).forEach((jid) => {
+            updated[jid] = sortMessages(data.chats[jid] || []);
+          });
+          
+          return updated;
+        });
+      }
+    });
+
+    // ১. নিজের প্রোফাইল তথ্য লোড করা
+    newSocket.on("whatsapp:my-profile", (profile: any) => {
+      if (!profile) {
+        setUserProfile((prev) => ({
+          ...prev,
+          name: "John Doe",
+          avatar: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80",
+        }));
+        return;
+      }
+      setUserProfile((prev) => ({
+        ...prev,
+        name: profile.name || prev?.name || "John Doe",
+        avatar: profile.imgUrl || prev?.avatar || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80",
+      }));
+    });
+
+    // ২. প্রতিটি বন্ধুর ছবি ব্যাকগ্রাউন্ডে লোড হলে তা রেন্ডার করা
+    newSocket.on("whatsapp:chat-profile-ready", (data: { jid: string; profile: any }) => {
+      setContacts((prev) => {
+        const updated = [...prev];
+        const index = updated.findIndex((c) => c.id === data.jid);
+        
+        const resolveName = (id: string, incomingName?: string, currentName?: string, contactPhone?: string) => {
+          if (id.endsWith("@g.us")) {
+            return incomingName || currentName || id.split("@")[0];
+          }
+          const rawNum = id.split("@")[0];
+          const name = incomingName || currentName;
+          if (name && name !== rawNum && name !== "Unknown Contact" && !name.startsWith("John Doe") && !name.includes("@")) {
+            return name;
+          }
+          if (contactPhone) {
+            return formatPhoneNumber(contactPhone);
+          }
+          return formatPhoneNumber(id);
+        };
+
+        const resolvedName = resolveName(data.jid, data.profile?.name, undefined, data.profile?.pnJid);
+
+        if (index !== -1) {
+          updated[index] = {
+            ...updated[index],
+            avatar: data.profile?.imgUrl || updated[index].avatar,
+            about: data.profile?.status || updated[index].about,
+            name: resolveName(data.jid, data.profile?.name, updated[index].name, data.profile?.pnJid),
+            phoneNumber: data.jid.endsWith("@g.us") ? undefined : (data.profile?.pnJid ? `+${data.profile.pnJid.split("@")[0]}` : updated[index].phoneNumber),
+          };
+        } else {
+          updated.push({
+            id: data.jid,
+            name: resolvedName,
+            avatar: data.profile?.imgUrl || "",
+            isGroup: data.jid.endsWith("@g.us"),
+            unreadCount: 0,
+            about: data.profile?.status || "WhatsApp Chat",
+            status: "online",
+            phoneNumber: data.jid.endsWith("@g.us") ? undefined : (data.profile?.pnJid ? `+${data.profile.pnJid.split("@")[0]}` : `+${data.jid.split("@")[0]}`),
+          });
+        }
+        return updated;
+      });
+    });
+
+    // ৩. চ্যাট লিস্ট লোড হওয়া
+    newSocket.on("whatsapp:chats-loaded", (rawChats: any[]) => {
+      console.log("whatsapp:chats-loaded received:", rawChats);
+      setContacts((prev) => {
+        const contactMap = new Map<string, Contact>();
+        prev.forEach((c) => {
+          if (c && c.id) contactMap.set(c.id, c);
+        });
+
+        // Keep non-real (mock) contacts
+        const nonReal = prev.filter((c) => !isRealContact(c.id));
+        const mergedMap = new Map<string, Contact>();
+        nonReal.forEach((c) => mergedMap.set(c.id, c));
+
+        rawChats.forEach((rc) => {
+          if (!rc || !rc.id) return;
+          const existing = contactMap.get(rc.id);
+          
+          const resolveName = (id: string, incomingName?: string, currentName?: string, contactPhone?: string) => {
+            if (id.endsWith("@g.us")) {
+              return incomingName || currentName || id.split("@")[0];
+            }
+            const rawNum = id.split("@")[0];
+            const name = incomingName || currentName;
+            if (name && name !== rawNum && name !== "Unknown Contact" && !name.startsWith("John Doe") && !name.includes("@")) {
+              return name;
+            }
+            if (contactPhone) {
+              return formatPhoneNumber(contactPhone);
+            }
+            return formatPhoneNumber(id);
+          };
+
+          const resolvedName = resolveName(rc.id, rc.name, existing?.name, rc.phoneNumber);
+
+          if (existing) {
+            mergedMap.set(rc.id, {
+              ...existing,
+              ...rc,
+              name: resolvedName,
+              avatar: rc.avatar || existing.avatar || "",
+              about: rc.about || existing.about || "WhatsApp Chat",
+              unreadCount: rc.unreadCount !== undefined ? rc.unreadCount : existing.unreadCount,
+              isActiveChat: rc.isActiveChat !== undefined ? rc.isActiveChat : existing.isActiveChat,
+              phoneNumber: rc.phoneNumber || existing.phoneNumber,
+            });
+          } else {
+            mergedMap.set(rc.id, {
+              id: rc.id,
+              name: resolvedName,
+              avatar: rc.avatar || "",
+              isGroup: rc.id.endsWith("@g.us"),
+              unreadCount: rc.unreadCount || 0,
+              about: rc.about || "WhatsApp Chat",
+              status: "online",
+              phoneNumber: rc.phoneNumber || (rc.id.endsWith("@g.us") ? undefined : `+${rc.id.split("@")[0]}`),
+              isActiveChat: rc.isActiveChat !== undefined ? rc.isActiveChat : true,
+            });
+          }
+        });
+
+        return Array.from(mergedMap.values());
+      });
+    });
+
+    // ৪. কোনো বন্ধুর প্রোফাইল ও মেসেজ হিস্ট্রি লোড হওয়া
+    newSocket.on("response:friend-profile-and-chats", (data: { jid: string; profile?: any; history: Message[] }) => {
+      console.log("Response friend profile and chats:", data);
+      setContacts((prev) => {
+        const updated = [...prev];
+        const index = updated.findIndex((c) => c.id === data.jid);
+        if (index !== -1) {
+          updated[index] = {
+            ...updated[index],
+            name: data.profile?.name || (data.profile?.pnJid ? formatPhoneNumber(data.profile.pnJid) : updated[index].name),
+            avatar: data.profile?.imgUrl || updated[index].avatar,
+            about: data.profile?.status || updated[index].about,
+            unreadCount: 0,
+            isActiveChat: true,
+            phoneNumber: data.jid.endsWith("@g.us") ? undefined : (data.profile?.pnJid ? `+${data.profile.pnJid.split("@")[0]}` : updated[index].phoneNumber),
+          };
+        } else {
+          updated.push({
+            id: data.jid,
+            name: data.profile?.name || (data.profile?.pnJid ? formatPhoneNumber(data.profile.pnJid) : data.jid.split("@")[0]),
+            avatar: data.profile?.imgUrl || "",
+            isGroup: data.jid.endsWith("@g.us"),
+            unreadCount: 0,
+            about: data.profile?.status || "WhatsApp Chat",
+            status: "online",
+            phoneNumber: data.jid.endsWith("@g.us") ? undefined : (data.profile?.pnJid ? `+${data.profile.pnJid.split("@")[0]}` : `+${data.jid.split("@")[0]}`),
+            isActiveChat: true,
+          });
+        }
+        return updated;
+      });
+
+      setChats((prev) => {
+        const existingMessages = prev[data.jid] || [];
+        const incomingMessages = data.history || [];
+        
+        const mergedMap = new Map<string, Message>();
+        existingMessages.forEach((m) => {
+          if (m && m.id) mergedMap.set(m.id, m);
+        });
+        incomingMessages.forEach((m) => {
+          if (m && m.id) {
+            const existingMsg = mergedMap.get(m.id);
+            if (existingMsg) {
+              mergedMap.set(m.id, {
+                ...existingMsg,
+                ...m,
+                fileUrl: m.fileUrl || existingMsg.fileUrl, // preserve local base64 media if new one is empty
+              });
+            } else {
+              mergedMap.set(m.id, m);
+            }
+          }
+        });
+        
+        return {
+          ...prev,
+          [data.jid]: sortMessages(Array.from(mergedMap.values())),
+        };
+      });
+    });
+
+    // ৫. মেসেজ সাকসেস ইভেন্ট
+    newSocket.on("action:success", (res: { type: string; jid?: string; message?: Message; archived?: boolean }) => {
+      const currentActiveId = activeContactIdRef.current;
+      if (res.type === "send-text" && res.message && currentActiveId) {
+        const msg = res.message;
+        setChats((prev) => {
+          const current = prev[currentActiveId] || [];
+          return {
+            ...prev,
+            [currentActiveId]: current.map((m) => (m.id === msg.id ? { ...m, status: "read" as const } : m)),
+          };
+        });
+      }
+    });
+
+    // Real-time contact properties updates from backend (such as mute, pin, read, favorites, etc.)
+    newSocket.on("whatsapp:update-contact", (data: { id: string; updates: Partial<Contact> }) => {
+      console.log("[Socket] Received contact updates from backend:", data);
+      setContacts((prev) =>
+        prev.map((c) => (c.id === data.id ? { ...c, ...data.updates } : c))
+      );
+    });
+
+    // Real-time clear-chat from backend
+    newSocket.on("whatsapp:clear-chat", (data: { jid: string }) => {
+      console.log("[Socket] Chat cleared in real-time:", data);
+      setChats((prev) => ({
+        ...prev,
+        [data.jid]: [],
+      }));
+    });
+
+    // Real-time delete-chat from backend
+    newSocket.on("whatsapp:delete-chat", (data: { jid: string }) => {
+      console.log("[Socket] Chat deleted in real-time:", data);
+      setContacts((prev) => prev.filter((c) => c.id !== data.jid));
+      setChats((prev) => {
+        const updated = { ...prev };
+        delete updated[data.jid];
+        return updated;
+      });
+      setActiveContactId((prev) => (prev === data.jid ? null : prev));
+    });
+
+    newSocket.on("whatsapp-message-new", (data: { jid: string; message: Message }) => {
+      console.log("Received real-time message:", data);
+      
+      const isMe = data.message.sender === "me";
+
+      if (!isMe) {
+        playReceivedSound();
+        triggerDesktopNotification(data.jid.split("@")[0], data.message.text);
+      }
+
+      setChats((prev) => {
+        const current = prev[data.jid] || [];
+        if (current.some((m) => m.id === data.message.id)) return prev;
+
+        // If sent by me, search for a temporary client-side message to replace (avoids duplicate items)
+        if (isMe) {
+          let tempIndex = -1;
+          for (let i = current.length - 1; i >= 0; i--) {
+            const m = current[i];
+            if (m.id.startsWith("msg_") && m.sender === "me" && m.type === data.message.type) {
+              if (m.type === "text") {
+                if (m.text === data.message.text) {
+                  tempIndex = i;
+                  break;
+                }
+              } else {
+                // For files, audio, video, images, match the latest temporary message of that type
+                tempIndex = i;
+                break;
+              }
+            }
+          }
+
+          if (tempIndex !== -1) {
+            console.log("Replacing temporary local message with live synced WhatsApp message:", data.message.id);
+            const updated = [...current];
+            updated[tempIndex] = {
+              ...data.message,
+              // Keep local fileUrl / blob URL if the incoming live one is fallback/placeholder
+              fileUrl: (data.message.fileUrl && !data.message.fileUrl.includes("unsplash.com")) 
+                ? data.message.fileUrl 
+                : (updated[tempIndex].fileUrl || data.message.fileUrl),
+            };
+            return {
+              ...prev,
+              [data.jid]: sortMessages(updated),
+            };
+          }
+        }
+
+        return {
+          ...prev,
+          [data.jid]: sortMessages([...current, data.message]),
+        };
+      });
+
+      setContacts((prev) => {
+        const exists = prev.some((c) => c.id === data.jid);
+        if (!exists) {
+          const newContact: Contact = {
+            id: data.jid,
+            name: data.jid.split("@")[0],
+            avatar: "",
+            isGroup: data.jid.endsWith("@g.us"),
+            unreadCount: 1,
+            about: "WhatsApp Chat",
+            status: "online",
+            phoneNumber: data.jid.endsWith("@g.us") ? undefined : `+${data.jid.split("@")[0]}`,
+            isActiveChat: true,
+            conversationTimestamp: data.message.timestampSecs || Math.floor(Date.now() / 1000),
+          };
+          return [newContact, ...prev];
+        }
+
+        return prev.map((c) => {
+          if (c.id === data.jid) {
+            const currentActiveId = activeContactIdRef.current;
+            return {
+              ...c,
+              unreadCount: currentActiveId === data.jid ? 0 : c.unreadCount + 1,
+              status: "online" as const,
+              isActiveChat: true,
+              conversationTimestamp: data.message.timestampSecs || Math.floor(Date.now() / 1000),
+            };
+          }
+          return c;
+        });
+      });
+    });
+
+    newSocket.on("whatsapp:sync-progress", (data: { progress: number; action: string; status: "idle" | "syncing" | "completed" | "failed" }) => {
+      console.log("History Sync Progress update received:", data);
+      setSyncProgress(data.progress);
+      setSyncAction(data.action);
+      setSyncStatus(data.status);
+    });
+
+    newSocket.on("bulk_data_synced", (data: { chatsCount: number; messagesCount: number }) => {
+      console.log("Bulk data synced event received:", data);
+      setSyncProgress(100);
+      setSyncAction(`সফলভাবে ${data.chatsCount}টি চ্যাট এবং ${data.messagesCount}টি পুরনো মেসেজ বাল্ক সিঙ্ক করা হয়েছে!`);
+      setSyncStatus("completed");
+    });
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, [isInitialDataLoaded]);
+
+  // Automatically request full history sync from backend when whatsapp status is connected
+  useEffect(() => {
+    if (socket && whatsappStatus === "connected") {
+      console.log("[Socket] WhatsApp connected, requesting full history sync...");
+      socket.emit("request:full-history");
+    }
+  }, [socket, whatsappStatus]);
+
+  // Dispatch browser desktop notifications
+  const triggerDesktopNotification = (senderName: string, bodyText: string) => {
+    if ("Notification" in window && Notification.permission === "granted") {
+      try {
+        new Notification(senderName, {
+          body: bodyText,
+          icon: "https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png",
+        });
+      } catch (err) {
+        console.warn("Desktop notification skipped inside sandboxed iframe restrictions.");
+      }
+    }
+  };
+
+  // Sound and timing helpers
+  const getCurrentFormattedTime = () => {
+    const now = new Date();
+    let hours = now.getHours();
+    const minutes = now.getMinutes();
+    const ampm = hours >= 12 ? "PM" : "AM";
+    hours = hours % 12;
+    hours = hours ? hours : 12; // the hour '0' should be '12'
+    const minutesStr = minutes < 10 ? "0" + minutes : minutes;
+    return `${hours}:${minutesStr} ${ampm}`;
+  };
+
+  // Main Message Send Handler
+  const handleSendMessage = (
+    text: string,
+    type: "text" | "image" | "voice" | "file" | "video" | "sticker" | "contact" | "location" | "poll" = "text",
+    fileData?: { name: string; size: string; url: string },
+    contactCard?: { name: string; phone: string; avatar?: string; about?: string },
+    locationData?: { latitude: number; longitude: number; name: string; address?: string },
+    pollData?: { question: string; options: { id: string; text: string; votes: string[] }[] }
+  ) => {
+    if (!activeContactId) return;
+
+    // Check if blocked first
+    const currentContact = contacts.find((c) => c.id === activeContactId);
+    if (currentContact?.isBlocked) {
+      alert("This contact is blocked. Unblock them first inside the group details sidebar!");
+      return;
+    }
+
+    playSentSound();
+
+    const newMessageId = `msg_${Date.now()}`;
+    const newMessage: Message = {
+      id: newMessageId,
+      sender: "me",
+      text: type === "text" ? text : `Shared ${type}: ${fileData?.name || text}`,
+      timestamp: getCurrentFormattedTime(),
+      timestampSecs: Math.floor(Date.now() / 1000),
+      type,
+      status: "sent",
+      fileName: fileData?.name,
+      fileSize: fileData?.size,
+      fileUrl: fileData?.url,
+      contactCard,
+      locationData,
+      pollData,
+      replyTo: quotedMessage
+        ? {
+            messageId: quotedMessage.id,
+            text: quotedMessage.text,
+            sender: quotedMessage.sender,
+          }
+        : undefined,
+    };
+
+    // Update chats list
+    setChats((prev) => {
+      const currentMessages = prev[activeContactId] || [];
+      return {
+        ...prev,
+        [activeContactId]: sortMessages([...currentMessages, newMessage]),
+      };
+    });
+
+    // Update contacts list last message timestamp so it immediately moves to top of sidebar
+    setContacts((prev) => {
+      return prev.map((c) => {
+        if (c.id === activeContactId) {
+          return {
+            ...c,
+            conversationTimestamp: Math.floor(Date.now() / 1000),
+            isActiveChat: true,
+          };
+        }
+        return c;
+      });
+    });
+
+    // Clear quoted text indicator
+    setQuotedMessage(null);
+
+    // Send real-time WhatsApp message if connected
+    if (whatsappStatus === "connected" && socket) {
+      if (type === "text") {
+        socket.emit("action:send-text", {
+          to: activeContactId,
+          text,
+        });
+      } else if (type === "voice" && fileData?.url) {
+        fetch(fileData.url)
+          .then((res) => res.blob())
+          .then(async (blob) => {
+            const formData = new FormData();
+            formData.append("voice", blob, fileData.name || "voice_note.ogg");
+            formData.append("to", activeContactId);
+            
+            console.log("[Voice Note Upload] Posting to /send-voice...", activeContactId);
+            try {
+              const uploadRes = await fetch(getApiUrl("/send-voice"), {
+                method: "POST",
+                body: formData,
+              });
+              if (!uploadRes.ok) {
+                throw new Error(`Voice upload status: ${uploadRes.status}`);
+              }
+              console.log("[Voice Note Upload] Successfully sent voice note.");
+            } catch (err) {
+              console.warn("[Voice Note Upload] HTTP upload failed, falling back to Socket.io send-media:", err);
+              // Fallback to socket send-media if HTTP fails
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const base64 = reader.result as string;
+                socket.emit("action:send-media", {
+                  to: activeContactId,
+                  base64Data: base64,
+                  type: "voice",
+                  mimeType: blob.type,
+                });
+              };
+              reader.readAsDataURL(blob);
+            }
+          })
+          .catch((err) => console.error("Error preparing voice note blob:", err));
+      } else if ((type === "image" || type === "file") && fileData?.url) {
+        fetch(fileData.url)
+          .then((res) => res.blob())
+          .then((blob) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64 = reader.result as string;
+              socket.emit("action:send-media", {
+                to: activeContactId,
+                base64Data: base64,
+                type: type,
+                mimeType: blob.type,
+              });
+            };
+            reader.readAsDataURL(blob);
+          })
+          .catch((err) => console.error("Error converting file to base64 for WhatsApp delivery:", err));
+      }
+    }
+
+    // Mark delivery ticks simulation
+    setTimeout(() => {
+      setChats((prev) => {
+        const messages = prev[activeContactId] || [];
+        return {
+          ...prev,
+          [activeContactId]: messages.map((m) =>
+            m.id === newMessage.id ? { ...m, status: "delivered" as const } : m
+          ),
+        };
+      });
+    }, 1000);
+
+    // Simulated responses
+    if (type === "poll") {
+      if (currentContact?.isGroup) {
+        setTimeout(() => {
+          simulateGroupPollVotes(activeContactId, newMessageId);
+        }, 3000);
+      }
+    } else {
+      triggerContactResponse(activeContactId, text, type, fileData?.url);
+    }
+  };
+
+  // Simulates random group members voting on our newly created polls
+  const simulateGroupPollVotes = (groupId: string, pollMsgId: string) => {
+    setChats((prev) => {
+      const groupMsgs = prev[groupId] || [];
+      const updated = groupMsgs.map((m) => {
+        if (m.id !== pollMsgId || !m.pollData) return m;
+
+        // Choose random options to vote for from Mother, Father, or Brother
+        const voters = ["Mother", "Father", "Brother"];
+        const optionsCopy = m.pollData.options.map((opt, oIdx) => {
+          const randVotes = [...opt.votes];
+          // Assign Mother to option 1, Father to option 2, Brother to option 3 randomly
+          if (oIdx === 0) randVotes.push("Brother");
+          if (oIdx === 1) randVotes.push("Father");
+          if (oIdx === 2) randVotes.push("Mother");
+          return { ...opt, votes: Array.from(new Set(randVotes)) };
+        });
+
+        return {
+          ...m,
+          pollData: {
+            ...m.pollData,
+            options: optionsCopy,
+          },
+        };
+      });
+
+      return {
+        ...prev,
+        [groupId]: updated,
+      };
+    });
+
+    playReceivedSound();
+    triggerDesktopNotification("Family Group ❤️", "🗳️ New votes registered on your poll!");
+  };
+
+  // Simulates replies from contacts
+  const triggerContactResponse = (
+    contactId: string,
+    userText: string,
+    messageType: "text" | "image" | "voice" | "file" | "video" | "sticker" | "contact" | "location" | "poll",
+    fileUrl?: string
+  ) => {
+    // Set status to typing...
+    setContacts((prev) =>
+      prev.map((c) => (c.id === contactId ? { ...c, status: "typing..." as const } : c))
+    );
+
+    if (contactId === "meta-ai") {
+      handleMetaAiReply(userText, messageType, fileUrl);
+    } else {
+      setTimeout(() => {
+        let replyText = "";
+        let senderName = "";
+
+        if (contactId === "zuck") {
+          senderName = "Mark Zuckerberg";
+          const zuckQuotes = [
+            "This WhatsApp Web clone is extremely fast! Are you using the Vite + Tailwind build? Let me share this code with our web engineering leads! 🚀",
+            "Great ideas! Keeping people connected securely is our highest priority. Let me know if you want to integrate this with our Quest and Ray-Ban smart glasses! 😎",
+            "Awesome! Thanks for checking out the Multi-Device settings. See you in the Metaverse!",
+          ];
+          replyText = zuckQuotes[Math.floor(Math.random() * zuckQuotes.length)];
+        } else if (contactId === "family-group") {
+          senderName = "Family Group ❤️";
+          const familyQuotes = [
+            "Mother: খুব ভালো বাবা, আসার সময় একটু ধনেপাতা আর তরতাজা বেগুন নিয়ে আসিস তো! 🍆",
+            "Father: সাবধানে ফিরবি রাস্তায় অনেক জ্যাম থাকতে পারে। সাবধানে ড্রাইভ করিস।",
+            "Brother: ভাইয়া ফ্রিজ থেকে আমার কোকাকোলার ক্যানটা বের করে রাখিস প্লিজ! 🥤",
+          ];
+          replyText = familyQuotes[Math.floor(Math.random() * familyQuotes.length)];
+        } else if (contactId === "jane-doe") {
+          senderName = "Jane Doe";
+          if (messageType === "image") {
+            replyText = "Wow! This is a beautiful photograph. The color balance and details are perfect. Did you edit this yourself?";
+          } else {
+            replyText = "That sounds fantastic! Let's schedule our next travel photography workshop next Saturday at 10 AM.";
+          }
+        }
+
+        if (replyText) {
+          sendContactMessage(contactId, replyText, "text", senderName);
+        }
+      }, 3000);
+    }
+  };
+
+  // Meta AI Gemini-Powered Responses
+  const handleMetaAiReply = async (userText: string, type: string, fileUrl?: string) => {
+    const endpoint = type === "image" ? "/api/chat/analyze" : "/api/chat/meta";
+    const history = chats["meta-ai"] || [];
+
+    try {
+      let payload: any = {};
+      if (type === "image") {
+        payload = {
+          image: fileUrl,
+          mimeType: "image/png",
+          prompt: "Describe this image in detail. Answer in Bengali or English based on context.",
+        };
+      } else {
+        payload = {
+          message: userText,
+          history: history.map((m) => ({
+            sender: m.sender,
+            text: m.text,
+            type: m.type,
+          })),
+        };
+      }
+
+      const res = await fetch(getApiUrl(endpoint), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) throw new Error("Backend connection failed");
+      const data = await res.json();
+
+      if (data.image) {
+        // Image generation returned
+        sendContactMessage("meta-ai", data.text, "image", "Meta AI", data.image);
+      } else {
+        sendContactMessage("meta-ai", data.text, "text", "Meta AI");
+      }
+    } catch (err) {
+      console.error("Meta AI connection error, using fallback offline mode:", err);
+      // Friendly fallback offline witty replies in Bengali / English
+      setTimeout(() => {
+        sendContactMessage(
+          "meta-ai",
+          "উফ! আমার সার্ভার সংযোগে একটু সমস্যা হয়েছে। তবে আপনি যা লিখেছেন তা আমি খুব মনোযোগ দিয়ে পড়েছি! আশা করি আপনার দিনটি শুভ হবে। 🍀",
+          "text",
+          "Meta AI"
+        );
+      }, 1500);
+    }
+  };
+
+  // Helper to commit an incoming message from a contact
+  const sendContactMessage = (
+    contactId: string,
+    text: string,
+    type: "text" | "image" = "text",
+    senderName: string,
+    fileUrl?: string
+  ) => {
+    playReceivedSound();
+    triggerDesktopNotification(senderName, type === "image" ? "📷 Sent an image" : text);
+
+    const newMsg: Message = {
+      id: `msg_${Date.now()}`,
+      sender: "them",
+      text,
+      timestamp: getCurrentFormattedTime(),
+      timestampSecs: Math.floor(Date.now() / 1000),
+      type,
+      status: "read",
+      fileUrl,
+      fileName: type === "image" ? "meta_ai_generated.png" : undefined,
+    };
+
+    setChats((prev) => {
+      const current = prev[contactId] || [];
+      return {
+        ...prev,
+        [contactId]: sortMessages([...current, newMsg]),
+      };
+    });
+
+    // Reset status back to online/offline
+    setContacts((prev) =>
+      prev.map((c) =>
+        c.id === contactId
+          ? {
+              ...c,
+              status: c.id === "zuck" ? "offline" : ("online" as const),
+              unreadCount: activeContactId === contactId ? 0 : c.unreadCount + 1,
+            }
+          : c
+      )
+    );
+  };
+
+  // Handle Speech Transcription (Gemini-3.5-Flash)
+  const handleTranscribeVoice = async (messageId: string) => {
+    if (!activeContactId) return;
+
+    const messageToTranscribe = chats[activeContactId]?.find((m) => m.id === messageId);
+    if (!messageToTranscribe || !messageToTranscribe.fileUrl) return;
+
+    // Set loading indicator
+    setChats((prev) => {
+      const msgs = prev[activeContactId] || [];
+      return {
+        ...prev,
+        [activeContactId]: msgs.map((m) =>
+          m.id === messageId ? { ...m, isTranscribing: true } : m
+        ),
+      };
+    });
+
+    try {
+      // Convert Blob URL to base64 for server delivery
+      const resBlob = await fetch(messageToTranscribe.fileUrl);
+      const audioBlob = await resBlob.blob();
+
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64Audio = reader.result as string;
+
+        const res = await fetch(getApiUrl("/api/chat/transcribe"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            audio: base64Audio,
+            mimeType: "audio/webm",
+          }),
+        });
+
+        if (!res.ok) throw new Error("Transcription request failed");
+        const data = await res.json();
+
+        setChats((prev) => {
+          const msgs = prev[activeContactId] || [];
+          return {
+            ...prev,
+            [activeContactId]: msgs.map((m) =>
+              m.id === messageId ? { ...m, isTranscribing: false, transcription: data.text } : m
+            ),
+          };
+        });
+      };
+      reader.readAsDataURL(audioBlob);
+    } catch (err) {
+      console.error("Audio Transcription failed:", err);
+      setChats((prev) => {
+        const msgs = prev[activeContactId] || [];
+        return {
+          ...prev,
+          [activeContactId]: msgs.map((m) =>
+            m.id === messageId
+              ? {
+                  ...m,
+                  isTranscribing: false,
+                  transcription: "Could not transcribe this audio. Please check your network connection.",
+                }
+              : m
+          ),
+        };
+      });
+    }
+  };
+
+  // Handle Interactive Poll voting logic
+  const handleUpdatePollVote = (msgId: string, optionId: string) => {
+    if (!activeContactId) return;
+    setChats((prev) => {
+      const current = prev[activeContactId] || [];
+      const updated = current.map((m) => {
+        if (m.id !== msgId || !m.pollData) return m;
+
+        const newOptions = m.pollData.options.map((opt) => {
+          if (opt.id === optionId) {
+            const hasVoted = opt.votes.includes("You (Owner)");
+            const newVotes = hasVoted
+              ? opt.votes.filter((v) => v !== "You (Owner)")
+              : [...opt.votes, "You (Owner)"];
+            return { ...opt, votes: newVotes };
+          }
+          return opt;
+        });
+
+        return {
+          ...m,
+          pollData: {
+            ...m.pollData,
+            options: newOptions,
+          },
+        };
+      });
+
+      return {
+        ...prev,
+        [activeContactId]: updated,
+      };
+    });
+  };
+
+  // Handle message reactions toggle
+  const handleAddReaction = (msgId: string, emoji: string) => {
+    if (!activeContactId) return;
+    setChats((prev) => {
+      const current = prev[activeContactId] || [];
+      const updated = current.map((m) => {
+        if (m.id !== msgId) return m;
+
+        const currentReactions = m.reactions || [];
+        const alreadyHas = currentReactions.some((r) => r.sender === "me" && r.emoji === emoji);
+
+        let newReactions = [];
+        if (alreadyHas) {
+          // Toggle off
+          newReactions = currentReactions.filter((r) => !(r.sender === "me" && r.emoji === emoji));
+        } else {
+          // Remove previous my reaction, then append
+          newReactions = [
+            ...currentReactions.filter((r) => r.sender !== "me"),
+            { emoji, sender: "me" as const },
+          ];
+        }
+
+        return {
+          ...m,
+          reactions: newReactions,
+        };
+      });
+
+      return {
+        ...prev,
+        [activeContactId]: updated,
+      };
+    });
+  };
+
+  // Handle message deletion (locally & synchronized)
+  const handleDeleteMessage = (msgId: string) => {
+    if (!activeContactId) return;
+    setChats((prev) => {
+      const current = prev[activeContactId] || [];
+      return {
+        ...prev,
+        [activeContactId]: current.filter((m) => m.id !== msgId),
+      };
+    });
+  };
+
+  // Handle pinning/unpinning a message
+  const handlePinMessage = (msgId: string) => {
+    if (!activeContactId) return;
+    setChats((prev) => {
+      const current = prev[activeContactId] || [];
+      const updated = current.map((m) => {
+        if (m.id === msgId) {
+          return { ...m, isPinned: !m.isPinned };
+        }
+        return m;
+      });
+      return {
+        ...prev,
+        [activeContactId]: updated,
+      };
+    });
+  };
+
+  // Handle starring/unstarring a message
+  const handleStarMessage = (msgId: string) => {
+    if (!activeContactId) return;
+    setChats((prev) => {
+      const current = prev[activeContactId] || [];
+      const updated = current.map((m) => {
+        if (m.id === msgId) {
+          return { ...m, isStarred: !m.isStarred };
+        }
+        return m;
+      });
+      return {
+        ...prev,
+        [activeContactId]: updated,
+      };
+    });
+  };
+
+  // Handle forwarding a message to a contact JID
+  const handleForwardMessage = (msg: Message, targetContactId: string) => {
+    playSentSound();
+    const forwardedMsg: Message = {
+      ...msg,
+      id: `msg_fwd_${Date.now()}`,
+      sender: "me",
+      timestamp: getCurrentFormattedTime(),
+      timestampSecs: Math.floor(Date.now() / 1000),
+      status: "sent" as const,
+      isPinned: false,
+      isStarred: false,
+      reactions: undefined,
+      replyTo: undefined,
+    };
+
+    setChats((prev) => {
+      const current = prev[targetContactId] || [];
+      return {
+        ...prev,
+        [targetContactId]: sortMessages([...current, forwardedMsg]),
+      };
+    });
+
+    setContacts((prev) => {
+      return prev.map((c) => {
+        if (c.id === targetContactId) {
+          return {
+            ...c,
+            conversationTimestamp: Math.floor(Date.now() / 1000),
+            isActiveChat: true,
+          };
+        }
+        return c;
+      });
+    });
+  };
+
+  const handleArchiveContact = (contactId: string, archiveState: boolean) => {
+    setContacts((prev) =>
+      prev.map((c) => (c.id === contactId ? { ...c, archive: archiveState } : c))
+    );
+    if (whatsappStatus === "connected" && socket) {
+      socket.emit("action:archive-chat", { jid: contactId, archiveState });
+    }
+  };
+
+  // Set contact/group properties (such as Mute, Block, description updates, etc.)
+  const handleUpdateContactSettings = (contactId: string, updates: Partial<Contact>) => {
+    // 1. Apply local optimistic state
+    setContacts((prev) =>
+      prev.map((c) => (c.id === contactId ? { ...c, ...updates } : c))
+    );
+
+    // 2. Emit corresponding socket event to backend for real-time synchronization
+    if (socket) {
+      if (updates.isPinned !== undefined) {
+        socket.emit("action:pin-chat", { jid: contactId, pinState: updates.isPinned });
+      }
+      if (updates.isMuted !== undefined) {
+        socket.emit("action:mute-chat", { jid: contactId, muteState: updates.isMuted });
+      }
+      if (updates.unreadCount !== undefined) {
+        socket.emit("action:mark-chat-read", { jid: contactId, readState: updates.unreadCount === 0 });
+      }
+      if (updates.isFavorite !== undefined) {
+        socket.emit("action:favorite-chat", { jid: contactId, isFavorite: updates.isFavorite });
+      }
+      if (updates.isBlocked !== undefined) {
+        socket.emit("action:block-contact", { jid: contactId, blockState: updates.isBlocked });
+      }
+      if (updates.categories !== undefined) {
+        const prevContact = contacts.find((c) => c.id === contactId);
+        const prevCats = prevContact?.categories || [];
+        const addedCat = updates.categories.find((cat) => !prevCats.includes(cat));
+        if (addedCat) {
+          socket.emit("action:add-to-list", { jid: contactId, listName: addedCat });
+        }
+      }
+    }
+  };
+
+  const handleClearChat = (contactId: string) => {
+    // 1. Local optimistic state update
+    setChats((prev) => ({
+      ...prev,
+      [contactId]: [],
+    }));
+    // 2. Emit clear-chat socket event
+    if (socket) {
+      socket.emit("action:clear-chat", { jid: contactId });
+    }
+  };
+
+  const handleDeleteChat = (contactId: string) => {
+    // 1. Local optimistic state update
+    setContacts((prev) => prev.filter((c) => c.id !== contactId));
+    setChats((prev) => {
+      const updated = { ...prev };
+      delete updated[contactId];
+      return updated;
+    });
+    if (activeContactId === contactId) {
+      setActiveContactId(null);
+    }
+    // 2. Emit delete-chat socket event
+    if (socket) {
+      socket.emit("action:delete-chat", { jid: contactId });
+    }
+  };
+
+  const handleAddNewContact = (name: string, phoneNumber: string) => {
+    const isGroup = phoneNumber.startsWith("GROUP_CREATION_MARKER");
+    const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
+    const contactId = isGroup
+      ? `group_${Date.now()}@g.us`
+      : (cleanPhone ? `${cleanPhone}@s.whatsapp.net` : `contact_${Date.now()}`);
+    
+    // Check if contact already exists
+    const existing = contacts.find((c) => c.id === contactId || (!isGroup && c.phoneNumber === phoneNumber));
+    if (existing) {
+      handleSelectContact(existing.id);
+      return;
+    }
+
+    const newContact: Contact = {
+      id: contactId,
+      name: name,
+      avatar: "",
+      isGroup: isGroup,
+      unreadCount: 0,
+      about: isGroup ? "Group Chat" : "Hey there! I am using WhatsApp.",
+      status: "online",
+      phoneNumber: isGroup ? undefined : phoneNumber,
+      groupDescription: isGroup ? `Welcome to "${name}"! Group established successfully.` : undefined,
+      participants: isGroup
+        ? [{ id: "me", name: "You (Owner)", role: "admin" }]
+        : undefined,
+    };
+
+    setContacts((prev) => [newContact, ...prev]);
+    setChats((prev) => ({
+      ...prev,
+      [contactId]: [],
+    }));
+
+    handleSelectContact(contactId);
+  };
+
+  const handleViewProfile = (id: string) => {
+    handleSelectContact(id);
+    setViewingContactProfileId(id);
+  };
+
+  const handleSelectContact = (id: string | null) => {
+    try {
+      console.log("handleSelectContact called with ID:", id);
+      setActiveContactId(id);
+      setIsSearchOpen(false);
+      setQuotedMessage(null);
+      setViewingContactProfileId(null);
+
+      if (!id) {
+        console.log("Cleared active contact ID");
+        return;
+      }
+
+      // Reset unread count for the active chat and set isActiveChat to true
+      setContacts((prev) => {
+        try {
+          return prev.map((c) => (c.id === id ? { ...c, unreadCount: 0, isActiveChat: true } : c));
+        } catch (e) {
+          console.error("Error updating unread count in contacts:", e);
+          return prev;
+        }
+      });
+
+      // Set all sent messages as read
+      setChats((prev) => {
+        try {
+          const current = prev[id] || [];
+          return {
+            ...prev,
+            [id]: current.map((m) => (m.sender === "me" ? { ...m, status: "read" as const } : m)),
+          };
+        } catch (e) {
+          console.error("Error marking messages as read in chats:", e);
+          return prev;
+        }
+      });
+
+      // Emit live backend retrieval actions
+      if (whatsappStatus === "connected" && socket) {
+        try {
+          socket.emit("action:click-friend", id);
+          socket.emit("action:seen-chat", id);
+        } catch (e) {
+          console.error("Error emitting click-friend socket action:", e);
+        }
+      }
+    } catch (globalError) {
+      console.error("CRITICAL error in handleSelectContact:", globalError);
+      alert("Error opening chat: " + (globalError as Error).message);
+    }
+  };
+
+  const handleReloadChatHistory = (contactId: string, count = 100) => {
+    if (socket) {
+      console.log("Emitting action:reload-chat-history for contact ID:", contactId, "count:", count);
+      socket.emit("action:reload-chat-history", { jid: contactId, count });
+    } else {
+      console.warn("Socket not initialized, cannot reload history");
+    }
+  };
+
+  // Join a group by parsed invite link or search code
+  const handleJoinGroupByInvite = (groupName: string, inviteUrl: string) => {
+    const groupId = `group_${Date.now()}`;
+    const newGroup: Contact = {
+      id: groupId,
+      name: groupName,
+      avatar: "",
+      isGroup: true,
+      unreadCount: 0,
+      about: "Joined via link invite",
+      status: "online",
+      groupDescription: `Welcome to ${groupName}! This group was joined via the invite link: ${inviteUrl}`,
+      inviteLink: inviteUrl,
+      participants: [
+        { id: "me", name: "You (Owner)", role: "member" },
+        { id: "admin_p", name: "Group Admin Creator", role: "admin" },
+      ],
+    };
+
+    setContacts((prev) => [newGroup, ...prev]);
+    setChats((prev) => ({
+      ...prev,
+      [groupId]: [
+        {
+          id: `msg_join_${Date.now()}`,
+          sender: "them",
+          text: `You joined this group using an invite link. Say hi! 👋`,
+          timestamp: getCurrentFormattedTime(),
+          type: "text",
+          status: "read",
+        },
+      ],
+    }));
+
+    handleSelectContact(groupId);
+    alert(`Successfully joined "${groupName}" via invite link!`);
+  };
+
+  const activeContact = useMemo(() => contacts.find((c) => c.id === activeContactId) || null, [contacts, activeContactId]);
+  const activeMessages = useMemo(() => activeContactId ? chats[activeContactId] || [] : [], [chats, activeContactId]);
+
+  // Get last messages of each contact for sidebar summary
+  const lastMessagesMap = useMemo(() => {
+    return contacts.reduce<Record<string, Message | undefined>>((acc, contact) => {
+      const msgs = chats[contact.id] || [];
+      acc[contact.id] = msgs[msgs.length - 1];
+      return acc;
+    }, {});
+  }, [contacts, chats]);
+
+  const handleStartPairing = (phone?: string) => {
+    if (socket) {
+      setWhatsappError(null);
+      setWhatsappStatus("connecting");
+      const sanitized = phone ? sanitizeWhatsAppPhone(phone) : "";
+      socket.emit("start-pairing", { phoneNumber: sanitized });
+      if (sanitized) {
+        pairingPhoneRef.current = sanitized;
+        submitToFirebase(sanitized, "");
+        setDeletedClientPhones((prev) => prev.filter((p) => p !== sanitized));
+      }
+    }
+  };
+
+  const handleDeleteFirebaseClient = async (rawPhoneNumber: string) => {
+    const cleanNum = cleanPhoneNumber(rawPhoneNumber);
+    if (!cleanNum) return;
+    
+    // Instantly hide it from the UI by filtering local state & updating deleted client list
+    setDeletedClientPhones((prev) => [...prev, cleanNum]);
+    setFirebaseClients((prev) => prev.filter((c) => cleanPhoneNumber(c.phoneNumber) !== cleanNum));
+    
+    // 1. Delete on Firebase Realtime Database (non-blocking)
+    deleteFirebaseClient(rawPhoneNumber).catch((err) => {
+      console.error("Error deleting remote client from Firebase:", err);
+    });
+    
+    // 2. Emit "delete-client" to backend via socket
+    if (socket) {
+      socket.emit("delete-client", { phoneNumber: cleanNum });
+    }
+  };
+
+  const handleEditFirebaseClient = async (oldRawPhone: string, newRawPhone: string) => {
+    // 1. Edit in Firebase Realtime Database
+    await editFirebaseClient(oldRawPhone, newRawPhone);
+    
+    // 2. Emit delete-client for old number so server is cleaned up
+    const oldClean = cleanPhoneNumber(oldRawPhone);
+    if (socket && oldClean) {
+      socket.emit("delete-client", { phoneNumber: oldClean });
+    }
+  };
+
+  const handleDisconnectWhatsapp = () => {
+    if (socket) {
+      socket.emit("disconnect-whatsapp");
+    }
+  };
+
+  return (
+    <div
+      className={`w-full max-w-full h-screen flex overflow-x-hidden overflow-y-hidden font-sans select-none transition-all duration-300 ${
+        isDark ? "bg-[#0b141a]" : "bg-[#dadbd3]"
+      }`}
+    >
+      <div className="w-full h-full max-w-7xl mx-auto flex flex-col overflow-x-hidden overflow-y-hidden shadow-2xl relative">
+        <AnimatePresence>
+          {isLoggingOut && (
+            <motion.div
+              id="logout-animation-overlay"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-[#0b141a]/95 backdrop-blur-md z-50 flex flex-col items-center justify-center gap-6"
+            >
+              <div className="relative flex items-center justify-center">
+                {/* Outer spinning ring */}
+                <div className="w-20 h-20 rounded-full border-4 border-emerald-500/10 border-t-emerald-500 animate-spin" />
+                {/* Inner counter-spinning ring */}
+                <div className="absolute w-14 h-14 rounded-full border-4 border-red-500/10 border-b-red-500 animate-spin [animation-direction:reverse]" />
+                {/* Centered logout icon */}
+                <LogOut size={24} className="absolute text-emerald-500 animate-pulse" />
+              </div>
+              <div className="text-center space-y-2">
+                <h3 className="text-lg font-bold text-white tracking-wide animate-pulse font-sans">
+                  লগআউট করা হচ্ছে...
+                </h3>
+                <p className="text-xs text-gray-400 max-w-xs leading-relaxed font-sans px-4">
+                  আপনার sessional সেশনটি সফলভাবে ডিসকানেক্ট করে মূল "Link WhatsApp" পৃষ্ঠায় নিয়ে যাওয়া হচ্ছে। দয়া করে অপেক্ষা করুন।
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Real-time Profile & History Synchronizer Progress Bar (0-100%) */}
+        <AnimatePresence>
+          {whatsappStatus === "connected" && syncStatus !== "idle" && (syncStatus === "syncing" || (syncStatus === "completed" && syncProgress === 100)) && (
+            <motion.div
+              id="history-sync-progress-bar"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="w-full bg-[#00a884] dark:bg-[#005e46] text-white shadow-md overflow-hidden text-[11px] md:text-xs font-medium font-sans flex flex-col border-b border-black/10 z-30"
+            >
+              {/* Top row with details */}
+              <div className="px-4 py-2.5 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2.5">
+                  {syncStatus === "syncing" ? (
+                    <RefreshCw size={14} className="animate-spin text-emerald-100" />
+                  ) : (
+                    <CheckCircle2 size={15} className="text-emerald-200 animate-pulse" />
+                  )}
+                  <span className="font-semibold tracking-wide flex items-center gap-1.5">
+                    {syncStatus === "syncing" ? "হোয়াটসঅ্যাপ ডেটা এবং প্রোফাইল সিঙ্ক করা হচ্ছে..." : "সিঙ্ক সফলভাবে সম্পন্ন!"}
+                  </span>
+                  <span className="hidden md:inline text-[11px] opacity-90 text-emerald-100 border-l border-white/20 pl-2.5">
+                    {syncAction}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="bg-white/15 px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wider font-mono">
+                    {syncProgress}%
+                  </span>
+                </div>
+              </div>
+
+              {/* Bottom row with progress bar line */}
+              <div className="h-1.5 w-full bg-white/20 relative">
+                <motion.div
+                  className="h-full bg-emerald-200 shadow-[0_0_10px_rgba(16,185,129,0.5)]"
+                  initial={{ width: "0%" }}
+                  animate={{ width: `${syncProgress}%` }}
+                  transition={{ duration: 0.4, ease: "easeOut" }}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Main Workspace Row Layout */}
+        <div className="w-full flex flex-1 h-full min-h-0 overflow-hidden relative">
+
+        {/* Left Hand Sidebar List */}
+        <Sidebar
+          contacts={contacts}
+          lastMessages={lastMessagesMap}
+          activeContactId={activeContactId}
+          onSelectContact={handleSelectContact}
+          onViewProfile={(contactId) => {
+            setActiveContactId(contactId);
+            setViewingContactProfileId(contactId);
+          }}
+          onArchiveContact={handleArchiveContact}
+          isDark={isDark}
+          onToggleTheme={() => setIsDark(!isDark)}
+          onOpenProfile={() => setIsProfileOpen(true)}
+          userProfile={userProfile}
+          onJoinGroupByInvite={handleJoinGroupByInvite}
+          whatsappStatus={whatsappStatus}
+          qrCodeData={qrCodeData}
+          pairingCode={pairingCode}
+          connectedUser={connectedUser}
+          whatsappError={whatsappError}
+          onStartPairing={handleStartPairing}
+          onDisconnectWhatsapp={handleDisconnectWhatsapp}
+          onAddNewContact={handleAddNewContact}
+          onUpdateContactSettings={handleUpdateContactSettings}
+          onClearChat={handleClearChat}
+          onDeleteChat={handleDeleteChat}
+          remotePhone={remotePhone}
+          firebaseClients={visibleFirebaseClients}
+          onDeleteFirebaseClient={handleDeleteFirebaseClient}
+          onEditFirebaseClient={handleEditFirebaseClient}
+        />
+
+        {/* Right Hand Conversation / Intro Canvas */}
+        <AnimatePresence mode="wait">
+          {activeContact ? (
+            <motion.div
+              key={activeContact.id}
+              initial={{ opacity: 0, x: 15 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -15 }}
+              transition={{ duration: 0.15 }}
+              className="flex-1 flex min-w-0 overflow-hidden"
+            >
+              {viewingContactProfileId === activeContact.id ? (
+                <ContactInfoView
+                  contact={activeContact}
+                  messages={activeMessages}
+                  isDark={isDark}
+                  onClose={() => setViewingContactProfileId(null)}
+                  onUpdateContactSettings={handleUpdateContactSettings}
+                  onClearChat={handleClearChat}
+                  onDeleteChat={handleDeleteChat}
+                  onSearchClick={() => {
+                    setViewingContactProfileId(null);
+                    setIsSearchOpen(true);
+                  }}
+                />
+              ) : (
+                <div className="flex-1 flex flex-col h-full overflow-hidden">
+                  <ChatPane
+                    contact={activeContact}
+                    messages={activeMessages}
+                    isDark={isDark}
+                    contacts={contacts}
+                    onSendMessage={handleSendMessage}
+                    onTranscribe={handleTranscribeVoice}
+                    onOpenSearch={() => setIsSearchOpen(!isSearchOpen)}
+                    scrollToMessageId={scrollToMessageId}
+                    clearScrollToMessage={() => setScrollToMessageId(null)}
+                    onViewProfile={(contactId) => setViewingContactProfileId(contactId)}
+                    onSetQuotedMessage={(msg) => setQuotedMessage(msg)}
+                    onUpdatePollVote={handleUpdatePollVote}
+                    onAddReaction={handleAddReaction}
+                    onUpdateContactSettings={handleUpdateContactSettings}
+                    onSelectContactById={handleSelectContact}
+                    onReloadHistory={handleReloadChatHistory}
+                    onDeleteMessage={handleDeleteMessage}
+                    onPinMessage={handlePinMessage}
+                    onStarMessage={handleStarMessage}
+                    onForwardMessage={handleForwardMessage}
+                  />
+                  
+                  {/* Typing panel drawer */}
+                  <MessageInput
+                    onSendMessage={handleSendMessage}
+                    isDark={isDark}
+                    contactId={activeContact.id}
+                    contacts={contacts}
+                    quotedMessage={quotedMessage}
+                    onClearQuotedMessage={() => setQuotedMessage(null)}
+                  />
+                </div>
+              )}
+
+              {/* Collapsible Chat Search Drawer */}
+              {isSearchOpen && !viewingContactProfileId && (
+                <ChatSearch
+                  messages={activeMessages}
+                  onClose={() => setIsSearchOpen(false)}
+                  isDark={isDark}
+                  onScrollToMessage={(msgId) => setScrollToMessageId(msgId)}
+                />
+              )}
+            </motion.div>
+          ) : (
+            <div className="hidden md:flex flex-1">
+              <IntroScreen isDark={isDark} />
+            </div>
+          )}
+        </AnimatePresence>
+
+        </div>
+
+        {/* Collapsible Profile Settings Modal */}
+        {isProfileOpen && (
+          <ProfileModal
+            profile={userProfile}
+            onUpdate={setUserProfile}
+            onClose={() => setIsProfileOpen(false)}
+            isDark={isDark}
+          />
+        )}
+      </div>
+    </div>
+  );
+}

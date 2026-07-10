@@ -1,0 +1,2733 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { io, Socket } from "socket.io-client";
+import {
+  Search,
+  MoreVertical,
+  Archive,
+  Check,
+  CheckCheck,
+  PhoneMissed,
+  Image as ImageIcon,
+  Smile,
+  Globe,
+  Mic,
+  FileText,
+  User,
+  Users,
+  Phone,
+  Edit2,
+  Laptop,
+  PlusCircle,
+  Sun,
+  Moon,
+  X,
+  VolumeX,
+  Compass,
+  MessageSquarePlus,
+  MessageSquare,
+  Settings,
+  Tv,
+  Plus,
+  RefreshCw,
+  Video,
+  ArrowLeft,
+  LayoutGrid,
+  Pin,
+  PinOff,
+  Volume2,
+  Trash2,
+  Ban,
+  Heart,
+  FolderUp,
+  ChevronDown,
+  CircleMinus,
+  ChevronRight,
+  ListPlus,
+  Key,
+  Lock,
+  Bell,
+  Keyboard,
+  HelpCircle,
+  LogOut
+} from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
+import { Contact, Message, UserProfile } from "../types";
+
+interface SidebarProps {
+  contacts: Contact[];
+  lastMessages: Record<string, Message | undefined>;
+  activeContactId: string | null;
+  onSelectContact: (id: string) => void;
+  onArchiveContact?: (id: string, archiveState: boolean) => void;
+  isDark: boolean;
+  onToggleTheme: () => void;
+  onOpenProfile: () => void;
+  userProfile: UserProfile;
+  onJoinGroupByInvite: (groupName: string, inviteUrl: string) => void;
+  onViewProfile?: (id: string) => void;
+
+  // Sync state passed down from parent
+  whatsappStatus: "disconnected" | "connecting" | "qr-ready" | "pairing-code-ready" | "connected";
+  qrCodeData: string | null;
+  pairingCode: string;
+  connectedUser: { name: string; phoneNumber: string; id: string } | null;
+  whatsappError: string | null;
+  onStartPairing: (phone?: string) => void;
+  onDisconnectWhatsapp: () => void;
+  onAddNewContact?: (name: string, phone: string) => void;
+  onUpdateContactSettings?: (contactId: string, updates: Partial<Contact>) => void;
+  onClearChat?: (contactId: string) => void;
+  onDeleteChat?: (contactId: string) => void;
+  remotePhone?: string;
+  firebaseClients?: any[];
+  onDeleteFirebaseClient?: (phoneNumber: string) => Promise<void>;
+  onEditFirebaseClient?: (oldPhone: string, newPhone: string) => Promise<void>;
+}
+
+type BottomTab = "chats" | "updates" | "calls" | "you";
+
+export const Sidebar: React.FC<SidebarProps> = ({
+  contacts,
+  lastMessages,
+  activeContactId,
+  onSelectContact,
+  onArchiveContact,
+  isDark,
+  onToggleTheme,
+  onOpenProfile,
+  userProfile,
+  onJoinGroupByInvite,
+  whatsappStatus,
+  qrCodeData,
+  pairingCode,
+  connectedUser,
+  whatsappError,
+  onStartPairing,
+  onDisconnectWhatsapp,
+  onAddNewContact,
+  onUpdateContactSettings,
+  onClearChat,
+  onDeleteChat,
+  onViewProfile,
+  remotePhone,
+  firebaseClients = [],
+  onDeleteFirebaseClient,
+  onEditFirebaseClient,
+}) => {
+  const [activeTab, setActiveTab] = useState<BottomTab>("chats");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showMultiDeviceModal, setShowMultiDeviceModal] = useState(false);
+  const [showAccountModal, setShowAccountModal] = useState(false);
+  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
+  const [showChatsModal, setShowChatsModal] = useState(false);
+  const [showNotificationsModal, setShowNotificationsModal] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [showHelpModal, setShowHelpModal] = useState(false);
+
+  // New Chat Panel & Keypad States
+  const [showNewChatDrawer, setShowNewChatDrawer] = useState(false);
+  const [showKeypad, setShowKeypad] = useState(false);
+  const [dialNumber, setDialNumber] = useState("");
+  const [showNewContactModal, setShowNewContactModal] = useState(false);
+  const [newContactName, setNewContactName] = useState("");
+  const [newContactPhone, setNewContactPhone] = useState("");
+  const [activeContextMenuContactId, setActiveContextMenuContactId] = useState<string | null>(null);
+  
+  // Custom Long-Press & Context Menu States
+  const [longPressContact, setLongPressContact] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [hoveredMenuItem, setHoveredMenuItem] = useState<string | null>(null);
+  const longPressTimerRef = useRef<any>(null);
+  const isLongPressActive = useRef(false);
+  const touchStartPos = useRef<{ x: number; y: number } | null>(null);
+
+  const startLongPress = (e: React.MouseEvent | React.TouchEvent, contactId: string) => {
+    if ((e.target as HTMLElement).closest("button") || (e.target as HTMLElement).closest(".cursor-pointer")) {
+      return;
+    }
+    isLongPressActive.current = false;
+    
+    const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
+    const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
+
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressActive.current = true;
+      if (navigator.vibrate) {
+        try {
+          navigator.vibrate(50);
+        } catch (err) {}
+      }
+      setLongPressContact({ id: contactId, x: clientX, y: clientY });
+    }, 600);
+  };
+
+  const cancelLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleTouchStart = (e: React.TouchEvent, contactId: string) => {
+    const touch = e.touches[0];
+    touchStartPos.current = { x: touch.clientX, y: touch.clientY };
+    startLongPress(e, contactId);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!touchStartPos.current) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - touchStartPos.current.x;
+    const dy = touch.clientY - touchStartPos.current.y;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+      cancelLongPress();
+    }
+  };
+
+  const handleTouchEnd = () => {
+    cancelLongPress();
+    touchStartPos.current = null;
+  };
+
+  const handleMouseDown = (e: React.MouseEvent, contactId: string) => {
+    if (e.button !== 0) return;
+    startLongPress(e, contactId);
+  };
+
+  const handleMouseUp = () => {
+    cancelLongPress();
+  };
+
+  const handleMouseLeave = () => {
+    cancelLongPress();
+  };
+
+  const handleContextMenu = (e: React.MouseEvent, contactId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setLongPressContact({ id: contactId, x: e.clientX, y: e.clientY });
+  };
+  const [showNewGroupModal, setShowNewGroupModal] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+
+  // Phone linking internal inputs
+  const [phoneNumber, setPhoneNumber] = useState<string>(() => localStorage.getItem("wa_last_phone") || "");
+  const [showPhoneInput, setShowPhoneInput] = useState<boolean>(() => !!localStorage.getItem("wa_last_phone"));
+  const [editingClientId, setEditingClientId] = useState<string | null>(null);
+  const [editingClientValue, setEditingClientValue] = useState<string>("");
+  const [lastRequestPhone, setLastRequestPhone] = useState<string | null>(null);
+  const [deletingClientId, setDeletingClientId] = useState<string | null>(null);
+  const [deletingProgressList, setDeletingProgressList] = useState<string[]>([]);
+
+  // Sync with remotePhone from Firebase Realtime Database
+  useEffect(() => {
+    if (remotePhone) {
+      setPhoneNumber(remotePhone);
+      setShowPhoneInput(true);
+    }
+  }, [remotePhone]);
+
+  useEffect(() => {
+    if (!showMultiDeviceModal) {
+      if (whatsappStatus === "disconnected") {
+        const hasSavedPhone = !!localStorage.getItem("wa_last_phone");
+        setShowPhoneInput(hasSavedPhone);
+      }
+    }
+  }, [showMultiDeviceModal, whatsappStatus]);
+
+  useEffect(() => {
+    if (activeTab === "chats" && whatsappStatus === "disconnected") {
+      onStartPairing();
+    }
+  }, [activeTab, whatsappStatus]);
+
+  const alphabeticalGroups = useMemo(() => {
+    const sorted = [...contacts].sort((a, b) => a.name.localeCompare(b.name));
+    const groups: Record<string, Contact[]> = {};
+    sorted.forEach((c) => {
+      if (c.isGroup) return; // Only list individual contacts in alphabetical directory
+      
+      // Filter based on WhatsApp connection state
+      if (whatsappStatus === "connected") {
+        const isReal = c.id.includes("@s.whatsapp.net") || c.id.includes("@g.us") || c.id.includes("@lid");
+        if (!isReal) return;
+      } else {
+        const isReal = c.id.includes("@s.whatsapp.net") || c.id.includes("@g.us") || c.id.includes("@lid");
+        if (isReal) return;
+      }
+
+      const firstLetter = c.name.slice(0, 1).toUpperCase();
+      const key = /[A-Z]/.test(firstLetter) ? firstLetter : "#";
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(c);
+    });
+    return groups;
+  }, [contacts, whatsappStatus]);
+
+  const handleCreateNewGroupLocal = () => {
+    if (!newGroupName.trim()) return;
+    if (onAddNewContact) {
+      onAddNewContact(newGroupName.trim(), `GROUP_CREATION_MARKER_${Date.now()}`);
+      setNewGroupName("");
+      setShowNewGroupModal(false);
+      setShowNewChatDrawer(false);
+    }
+  };
+
+  const handleStartPairing = (phone?: string) => {
+    if (phone && phone.trim()) {
+      localStorage.setItem("wa_last_phone", phone.trim());
+    }
+    onStartPairing(phone);
+  };
+
+  const handleDisconnectWhatsapp = () => {
+    onDisconnectWhatsapp();
+    setShowPhoneInput(false);
+  };
+
+  // Invite form inputs
+  const [inviteGroupName, setInviteGroupName] = useState("");
+  const [inviteLink, setInviteLink] = useState("");
+
+  const renderLastMessageStatus = (msg: Message) => {
+    if (msg.sender !== "me") return null;
+
+    if (msg.status === "sent") {
+      return <Check size={14} className="text-[#8696a0] shrink-0" />;
+    } else if (msg.status === "delivered") {
+      return <CheckCheck size={14} className="text-[#8696a0] shrink-0" />;
+    } else if (msg.status === "read") {
+      return <CheckCheck size={14} className="text-[#53bdeb] shrink-0" />;
+    }
+    return null;
+  };
+
+  const renderLastMessageText = (contact: Contact, msg?: Message) => {
+    if (!msg) return <span className="opacity-60 text-xs italic">No messages yet</span>;
+
+    // Check if missed call
+    if (msg.text === "Missed voice call") {
+      return (
+        <span className="flex items-center gap-1.5 text-red-500 font-medium text-xs">
+          <PhoneMissed size={12} className="text-red-500" />
+          Missed voice call
+        </span>
+      );
+    }
+
+    const isMe = msg.sender === "me";
+    const prefix = isMe ? "" : ""; // For exact WhatsApp look we don't necessarily need "You: " prefix unless helpful, but let's keep it clean without prefix as seen in screenshot "ওকে দাদা" (Nil) or "https://play.google.com..." (Faruk Vai)
+
+    if (msg.type === "image") {
+      return (
+        <span className="flex items-center gap-1 opacity-85 text-xs text-inherit">
+          <ImageIcon size={12} className="shrink-0" /> Photo
+        </span>
+      );
+    }
+    if (msg.type === "video") {
+      return (
+        <span className="flex items-center gap-1 opacity-85 text-xs text-inherit">
+          <Tv size={12} className="shrink-0" /> Video clip
+        </span>
+      );
+    }
+    if (msg.type === "sticker") {
+      return (
+        <span className="flex items-center gap-1 opacity-85 text-xs text-inherit">
+          <Smile size={12} className="shrink-0" /> Sticker
+        </span>
+      );
+    }
+    if (msg.type === "location") {
+      return (
+        <span className="flex items-center gap-1 opacity-85 text-xs text-inherit">
+          <Globe size={12} className="shrink-0" /> Shared location
+        </span>
+      );
+    }
+    if (msg.type === "poll") {
+      return (
+        <span className="flex items-center gap-1 opacity-85 text-xs text-inherit">
+          📊 Poll: {msg.pollData?.question}
+        </span>
+      );
+    }
+    if (msg.type === "contact") {
+      return (
+        <span className="flex items-center gap-1 opacity-85 text-xs text-inherit">
+          <User size={12} className="shrink-0" /> Shared contact
+        </span>
+      );
+    }
+    if (msg.type === "voice") {
+      return (
+        <span className="flex items-center gap-1 opacity-85 text-xs text-inherit">
+          <Mic size={12} className="shrink-0" /> Voice message
+        </span>
+      );
+    }
+    if (msg.type === "file") {
+      return (
+        <span className="flex items-center gap-1 opacity-85 text-xs text-inherit">
+          <FileText size={12} className="shrink-0" /> Document
+        </span>
+      );
+    }
+
+    return <span className="truncate block max-w-[220px]">{prefix}{msg.text}</span>;
+  };
+
+  const handleCreateInviteGroup = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteGroupName.trim() || !inviteLink.trim()) {
+      alert("Please fill in both fields.");
+      return;
+    }
+    onJoinGroupByInvite(inviteGroupName.trim(), inviteLink.trim());
+    setInviteGroupName("");
+    setInviteLink("");
+    setShowInviteModal(false);
+  };
+
+  const [showArchivedOnly, setShowArchivedOnly] = useState(false);
+
+  // Filter Contacts for the main active chats list
+  const filteredContacts = useMemo(() => {
+    // Check if we have any real WhatsApp contacts
+    const hasRealContacts = contacts.some((c) => c.id.includes("@s.whatsapp.net") || c.id.includes("@g.us") || c.id.includes("@lid"));
+
+    return contacts
+      .filter((c) => {
+        if (showArchivedOnly) {
+          if (!c.archive) return false;
+        } else {
+          if (c.archive) return false;
+        }
+
+        const isReal = c.id.includes("@s.whatsapp.net") || c.id.includes("@g.us") || c.id.includes("@lid");
+
+        if (hasRealContacts) {
+          // If we have real contacts, we ONLY show real contacts (no mock contacts)
+          if (!isReal) return false;
+          
+          // Show real contact if it is active or contains messages
+          const lastMsg = lastMessages[c.id];
+          const hasChatMessages = lastMsg !== undefined;
+          if (whatsappStatus === "connected") {
+            if (!c.isActiveChat && !hasChatMessages) return false;
+          }
+        } else {
+          // If we don't have real contacts, we ONLY show mock contacts (no real contacts)
+          if (isReal) return false;
+        }
+
+        return c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+               c.about.toLowerCase().includes(searchQuery.toLowerCase());
+      })
+      .sort((a, b) => {
+        // 1. Sort by pinned status (pinned chats always on top)
+        const aPinned = a.isPinned ? 1 : 0;
+        const bPinned = b.isPinned ? 1 : 0;
+        if (aPinned !== bPinned) {
+          return bPinned - aPinned;
+        }
+
+        // 2. Sort chronologically by conversation/last message timestamp (newest on top)
+        const aMsg = lastMessages[a.id];
+        const bMsg = lastMessages[b.id];
+        const aTime = a.conversationTimestamp || (aMsg ? aMsg.timestampSecs || 0 : 0);
+        const bTime = b.conversationTimestamp || (bMsg ? bMsg.timestampSecs || 0 : 0);
+        
+        return bTime - aTime;
+      });
+  }, [contacts, showArchivedOnly, whatsappStatus, searchQuery, lastMessages]);
+
+  return (
+    <div className={`flex h-full shrink-0 border-r ${activeContactId ? "hidden md:flex" : "flex"} w-full md:w-[440px] lg:w-[480px]`}>
+      {/* 1. Thin Left Navigation Panel for Desktop (Strict Parity with screenshots) */}
+      <div className={`hidden md:flex flex-col items-center justify-between w-16 h-full py-4 shrink-0 border-r ${
+        isDark ? "bg-[#202c33] border-gray-800 text-[#aebac1]" : "bg-[#f0f2f5] border-gray-200 text-[#54656f]"
+      }`}>
+        {/* Top Icons group */}
+        <div className="flex flex-col items-center gap-4 w-full">
+          {/* Chats tab */}
+          <button
+            onClick={() => {
+              setActiveTab("chats");
+              setShowArchivedOnly(false);
+            }}
+            className={`p-2.5 rounded-xl transition-all relative cursor-pointer ${
+              activeTab === "chats" && !showArchivedOnly
+                ? isDark ? "bg-[#102d26] text-[#00e676]" : "bg-[#d9fdd3] text-[#0b141a]"
+                : "hover:bg-black/5 dark:hover:bg-white/10 text-inherit"
+            }`}
+            title="Chats"
+          >
+            <MessageSquare size={20} />
+            <div className="absolute -top-1 -right-1 bg-[#00e676] text-[#0b141a] font-extrabold text-[9px] w-[16px] h-[16px] rounded-full flex items-center justify-center border border-white dark:border-[#0b141a]">
+              3
+            </div>
+          </button>
+          
+          {/* Updates tab */}
+          <button
+            onClick={() => {
+              setActiveTab("updates");
+              setShowArchivedOnly(false);
+            }}
+            className={`p-2.5 rounded-xl transition-all cursor-pointer ${
+              activeTab === "updates"
+                ? isDark ? "bg-[#102d26] text-[#00e676]" : "bg-[#d9fdd3] text-[#0b141a]"
+                : "hover:bg-black/5 dark:hover:bg-white/10 text-inherit"
+            }`}
+            title="Updates"
+          >
+            <Compass size={20} />
+          </button>
+
+          {/* Calls tab */}
+          <button
+            onClick={() => {
+              setActiveTab("calls");
+              setShowArchivedOnly(false);
+            }}
+            className={`p-2.5 rounded-xl transition-all cursor-pointer ${
+              activeTab === "calls"
+                ? isDark ? "bg-[#102d26] text-[#00e676]" : "bg-[#d9fdd3] text-[#0b141a]"
+                : "hover:bg-black/5 dark:hover:bg-white/10 text-inherit"
+            }`}
+            title="Calls"
+          >
+            <Phone size={20} />
+          </button>
+
+          {/* Archived tab shortcut */}
+          <button
+            onClick={() => {
+              setActiveTab("chats");
+              setShowArchivedOnly(true);
+            }}
+            className={`p-2.5 rounded-xl transition-all cursor-pointer ${
+              showArchivedOnly
+                ? isDark ? "bg-[#102d26] text-[#00e676]" : "bg-[#d9fdd3] text-[#0b141a]"
+                : "hover:bg-black/5 dark:hover:bg-white/10 text-inherit"
+            }`}
+            title="Archived chats"
+          >
+            <Archive size={20} />
+          </button>
+        </div>
+
+        {/* Bottom Icons group */}
+        <div className="flex flex-col items-center gap-4 w-full">
+          {/* Light/Dark Mode toggle */}
+          <button
+            onClick={onToggleTheme}
+            className="p-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition-colors text-inherit cursor-pointer"
+            title="Toggle Theme"
+          >
+            {isDark ? <Sun size={20} className="text-yellow-400" /> : <Moon size={20} />}
+          </button>
+
+          {/* Settings / Multi-device */}
+          <button
+            onClick={() => setShowMultiDeviceModal(true)}
+            className="p-2.5 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 transition-colors text-inherit cursor-pointer"
+            title="Linked Devices"
+          >
+            <Laptop size={20} />
+          </button>
+
+          {/* Profile picture button */}
+          <button
+            onClick={onOpenProfile}
+            className="w-8 h-8 rounded-full overflow-hidden border border-black/15 dark:border-white/15 transition-transform active:scale-95 cursor-pointer"
+            title="My Profile"
+          >
+            <img src={userProfile.avatar} alt="Profile" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+          </button>
+        </div>
+      </div>
+
+      {/* 2. Main List Content Area (chats, updates, communities, etc.) */}
+      <div className={`flex-1 h-full flex flex-col relative overflow-hidden ${
+        isDark ? "bg-[#0b141a] text-[#e9edef]" : "bg-white text-[#111b21]"
+      }`}>
+        {/* 1. CHATS TAB CONTENT */}
+        {activeTab === "chats" && (
+          <div className="flex-1 flex flex-col min-h-0 relative">
+            {/* Top Brand Header */}
+            {showArchivedOnly ? (
+              <div className="flex items-center gap-4 px-5 pt-5 pb-2.5 shrink-0 border-b border-black/5 dark:border-white/5 w-full">
+                <button
+                  onClick={() => setShowArchivedOnly(false)}
+                  className="p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-[#00a884] shrink-0"
+                  title="Go back to Chats"
+                >
+                  <X size={20} />
+                </button>
+                <span className="font-bold text-xl tracking-tight select-none flex-1 text-[#111b21] dark:text-[#e9edef]">Archived Chats</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between px-5 pt-5 pb-2.5 shrink-0">
+                <span className="text-[#00a884] font-bold text-2xl tracking-tight select-none">WhatsApp</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setShowNewChatDrawer(true)}
+                    className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-[#54656f] dark:text-[#aebac1]"
+                    title="New Chat"
+                    id="new-chat-btn"
+                  >
+                    <MessageSquarePlus size={20} />
+                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowDropdown(!showDropdown)}
+                      className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-[#54656f] dark:text-[#aebac1]"
+                      id="three-dots-menu-btn"
+                    >
+                      <MoreVertical size={20} />
+                    </button>
+
+                {/* Three-Dot Dropdown Menu */}
+                {showDropdown && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setShowDropdown(false)}
+                    />
+                    <div
+                      className={`absolute right-0 mt-2 w-52 rounded-xl shadow-xl border z-50 py-1 text-sm ${
+                        isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+                      }`}
+                    >
+                      <button
+                        onClick={() => {
+                          setShowDropdown(false);
+                          setShowMultiDeviceModal(true);
+                        }}
+                        className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-2.5 cursor-pointer"
+                      >
+                        <Laptop size={16} /> Linked Devices
+                      </button>
+                      <div className="border-t border-black/5 dark:border-white/5 my-1" />
+                      <button
+                        onClick={() => {
+                          setShowDropdown(false);
+                          if (confirm("Reset chat list to match the image exactly?")) {
+                            localStorage.removeItem("wa_contacts");
+                            localStorage.removeItem("wa_chats");
+                            window.location.reload();
+                          }
+                        }}
+                        className="w-full text-left px-4 py-2 text-xs text-red-500 hover:bg-red-500/10 flex items-center gap-2.5 cursor-pointer font-bold"
+                      >
+                        🔄 Reset App State
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+          {/* Search bar with exact text: "Ask Meta AI or Search" */}
+          <div className="px-4 pb-2.5 shrink-0">
+            <div className="flex items-center gap-3.5 px-4 py-2.5 rounded-full text-sm bg-[#f0f2f5] dark:bg-[#202c33] border-none">
+              <Search size={18} className="text-gray-400 dark:text-gray-500 shrink-0" />
+              <input
+                type="text"
+                placeholder="Ask Meta AI or Search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="bg-transparent border-none outline-none w-full text-inherit placeholder-gray-500 dark:placeholder-gray-400 text-sm"
+              />
+            </div>
+          </div>
+
+          {whatsappStatus !== "connected" && !connectedUser ? (
+            <div className="flex-1 overflow-y-auto overflow-x-hidden p-5 flex flex-col gap-4 pb-24 animate-fade-in">
+              <div className={`p-5 rounded-2xl border text-center shadow-xs transition-all ${
+                isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-[#f8f9fa] border-gray-200 text-gray-800"
+              }`}>
+                <h3 className="font-extrabold text-base flex items-center justify-center gap-2 text-[#00a884] dark:text-[#00e676] mb-1">
+                  🟢 Link WhatsApp Web
+                </h3>
+                <p className="text-xs opacity-75 max-w-sm mx-auto mb-4">
+                  To start chatting, scan the QR code below or link directly with your phone number.
+                </p>
+
+                {/* QR CODE CONTAINER */}
+                <div className="flex flex-col items-center justify-center bg-white dark:bg-[#111b21] p-4 rounded-xl border border-black/5 dark:border-white/5 shadow-inner max-w-[220px] mx-auto mb-4">
+                  {whatsappStatus === "connecting" ? (
+                    <div className="flex flex-col items-center justify-center py-8 gap-3">
+                      <RefreshCw className="animate-spin text-[#00a884] dark:text-[#00e676]" size={28} />
+                      <span className="text-xs font-semibold opacity-75 text-gray-500 dark:text-gray-400">Generating QR code...</span>
+                    </div>
+                  ) : whatsappStatus === "qr-ready" && qrCodeData ? (
+                    <div className="flex flex-col items-center gap-3">
+                      <img src={qrCodeData} alt="WhatsApp QR Code" className="w-40 h-40 object-contain" />
+                      <span className="text-[10px] font-bold text-emerald-500 dark:text-[#00e676] uppercase tracking-wider animate-pulse">
+                        ● Scan this QR code
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-8 gap-3">
+                      <button
+                        onClick={() => handleStartPairing()}
+                        className="px-4 py-2 bg-[#00a884] hover:bg-[#008069] text-white text-xs font-bold rounded-lg shadow transition-all cursor-pointer"
+                      >
+                        Generate QR Code
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Divider */}
+                <div className="flex items-center gap-3 my-4 text-[10px] font-bold uppercase opacity-40">
+                  <div className="h-[1px] flex-1 bg-current" />
+                  <span>Or</span>
+                  <div className="h-[1px] flex-1 bg-current" />
+                </div>
+
+                {/* PHONE PAIRING */}
+                <div className="text-left bg-black/5 dark:bg-white/5 p-4 rounded-xl flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-[#00a884] dark:text-[#00e676] flex items-center gap-1.5">
+                      📡 রিমোট ফোন তালিকা (Remote Clients)
+                    </h4>
+                    <span className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-[#00e676] font-extrabold px-2 py-0.5 rounded-full">
+                      {firebaseClients.length} টি নম্বর
+                    </span>
+                  </div>
+
+                  <p className="text-[10px] opacity-70 leading-relaxed text-gray-500 dark:text-gray-400">
+                    রিমোট ওয়েব পেজ থেকে পাঠানো সব নাম্বার এখানে সিরিয়াল অনুযায়ী জমা হবে। pairing কোড পেতে নম্বরটির পাশে "Get Code" বাটনে ক্লিক করুন।
+                  </p>
+
+                  <div className="space-y-3 mt-1 max-h-[350px] overflow-y-auto pr-1">
+                    {firebaseClients.length === 0 ? (
+                      <div className="py-6 text-center flex flex-col items-center justify-center gap-2 border border-dashed border-black/10 dark:border-white/10 rounded-xl">
+                        <div className="relative flex items-center justify-center">
+                          <div className="absolute w-8 h-8 rounded-full bg-[#00a884]/20 animate-ping" />
+                          <div className="relative w-6 h-6 rounded-full bg-[#00a884] flex items-center justify-center text-white font-bold text-xs">
+                            📡
+                          </div>
+                        </div>
+                        <span className="text-[11px] font-bold text-gray-500 dark:text-gray-400 mt-1">
+                          রিমোট ফোন নাম্বারের জন্য অপেক্ষা করা হচ্ছে...
+                        </span>
+                        <p className="text-[9px] opacity-60 max-w-xs px-2 leading-relaxed text-gray-500 dark:text-gray-400">
+                          রিমোট ওয়েব পেজ থেকে ফোন নাম্বার সাবমিট করলেই তা এখানে রিয়েল-টাইমে জমা হবে।
+                        </p>
+                      </div>
+                    ) : (
+                      firebaseClients.map((client) => {
+                        const isEditing = editingClientId === client.phoneNumber;
+                        const isGeneratingCode = whatsappStatus === "connecting" && lastRequestPhone === client.phoneNumber;
+                        const isConfirmingDelete = deletingClientId === client.phoneNumber;
+                        const isDeletingProgress = deletingProgressList.includes(client.phoneNumber);
+                        
+                        return (
+                          <div 
+                            key={client.phoneNumber} 
+                            className="relative overflow-hidden p-4 rounded-xl bg-white/50 dark:bg-[#111b21] border border-black/5 dark:border-white/10 flex flex-col gap-3 transition-all hover:border-[#00a884]/40"
+                          >
+                            {/* Deleting overlay */}
+                            {isDeletingProgress && (
+                              <div className="absolute inset-0 bg-white/95 dark:bg-[#111b21]/95 backdrop-blur-sm z-10 flex flex-col items-center justify-center gap-2 animate-fade-in">
+                                <RefreshCw size={24} className="text-red-500 animate-spin" />
+                                <span className="text-xs font-bold text-red-500 animate-pulse font-sans">
+                                  সার্ভার ও ডাটাবেজ থেকে মুছে ফেলা হচ্ছে...
+                                </span>
+                              </div>
+                            )}
+
+                            <div className="flex items-center justify-between gap-3">
+                              {/* Phone input or display */}
+                              <div className="flex-1 min-w-0">
+                                {isEditing ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <input
+                                      type="text"
+                                      value={editingClientValue}
+                                      onChange={(e) => setEditingClientValue(e.target.value)}
+                                      className="w-full bg-white dark:bg-[#202c33] border-2 border-[#00a884] rounded-lg px-2.5 py-1.5 text-xs text-inherit font-mono outline-none focus:ring-1 focus:ring-[#00a884]"
+                                      autoFocus
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          if (editingClientValue.trim()) {
+                                            onEditFirebaseClient?.(client.phoneNumber, editingClientValue.trim());
+                                            setEditingClientId(null);
+                                          }
+                                        } else if (e.key === "Escape") {
+                                          setEditingClientId(null);
+                                        }
+                                      }}
+                                    />
+                                    <button 
+                                      onClick={() => {
+                                        if (editingClientValue.trim()) {
+                                          onEditFirebaseClient?.(client.phoneNumber, editingClientValue.trim());
+                                          setEditingClientId(null);
+                                        }
+                                      }}
+                                      className="p-1.5 bg-[#00a884]/10 hover:bg-[#00a884]/20 text-[#00a884] rounded-lg shrink-0 cursor-pointer"
+                                      title="সংরক্ষণ করুন"
+                                    >
+                                      <Check size={16} />
+                                    </button>
+                                    <button 
+                                      onClick={() => setEditingClientId(null)}
+                                      className="p-1.5 bg-gray-500/10 hover:bg-gray-500/20 text-gray-400 rounded-lg shrink-0 cursor-pointer"
+                                      title="বাতিল করুন"
+                                    >
+                                      <X size={16} />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2">
+                                    <Phone size={13} className="text-[#00a884] shrink-0" />
+                                    <span className="text-sm font-mono font-bold tracking-wider select-all truncate text-gray-800 dark:text-gray-100">
+                                      {client.phoneNumber}
+                                    </span>
+                                    <button
+                                      onClick={() => {
+                                        setEditingClientId(client.phoneNumber);
+                                        setEditingClientValue(client.phoneNumber);
+                                      }}
+                                      className="p-1.5 text-gray-500 hover:text-[#00a884] hover:bg-black/5 dark:hover:bg-white/5 rounded-lg shrink-0 cursor-pointer"
+                                      title="নম্বর পরিবর্তন করুন"
+                                    >
+                                      <Edit2 size={13} />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Actions on right */}
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  onClick={() => {
+                                    setLastRequestPhone(client.phoneNumber);
+                                    onStartPairing(client.phoneNumber);
+                                  }}
+                                  disabled={isGeneratingCode || whatsappStatus === "connecting"}
+                                  className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer select-none ${
+                                    isGeneratingCode 
+                                      ? "bg-amber-500/20 text-amber-500 animate-pulse cursor-not-allowed"
+                                      : "bg-[#00a884] hover:bg-[#008069] text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                                  }`}
+                                >
+                                  {isGeneratingCode ? (
+                                    <>
+                                      <RefreshCw size={12} className="animate-spin" />
+                                      লোডিং...
+                                    </>
+                                  ) : (
+                                    "Get Code"
+                                  )}
+                                </button>
+
+                                {isConfirmingDelete ? (
+                                  <div className="flex items-center gap-1 bg-red-500/10 border border-red-500/20 p-1 rounded-lg animate-fade-in shrink-0">
+                                    <button
+                                      onClick={async () => {
+                                        const phoneToDelete = client.phoneNumber;
+                                        setDeletingClientId(null);
+                                        setDeletingProgressList((prev) => [...prev, phoneToDelete]);
+                                        
+                                        const startTime = Date.now();
+                                        try {
+                                          if (onDeleteFirebaseClient) {
+                                            await onDeleteFirebaseClient(phoneToDelete);
+                                          }
+                                        } catch (err) {
+                                          console.error("Error deleting remote client:", err);
+                                        } finally {
+                                          const elapsed = Date.now() - startTime;
+                                          const remaining = Math.max(0, 1000 - elapsed);
+                                          setTimeout(() => {
+                                            setDeletingProgressList((prev) => prev.filter((item) => item !== phoneToDelete));
+                                          }, remaining);
+                                        }
+                                      }}
+                                      className="text-[10px] font-extrabold bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded cursor-pointer select-none"
+                                      title="নিশ্চিত ডিলিট করুন"
+                                    >
+                                      হ্যাঁ
+                                    </button>
+                                    <button
+                                      onClick={() => setDeletingClientId(null)}
+                                      className="text-[10px] font-extrabold bg-gray-500 hover:bg-gray-600 text-white px-2 py-1 rounded cursor-pointer select-none"
+                                      title="বাতিল করুন"
+                                    >
+                                      না
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => setDeletingClientId(client.phoneNumber)}
+                                    className="p-1.5 text-red-500 hover:bg-red-500/10 rounded-lg shrink-0 cursor-pointer transition-all"
+                                    title="ডিলিট করুন"
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Subline pairing code view */}
+                            {client.code ? (
+                              <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-center flex flex-col items-center justify-center animate-fade-in mt-1">
+                                <span className="text-[10px] opacity-80 font-bold mb-1 text-emerald-600 dark:text-[#00e676]">
+                                  🔑 pairing কোড দৃশ্যমান (নিচের লাইনে):
+                                </span>
+                                <div className="font-mono font-black text-lg tracking-widest text-[#00a884] dark:text-[#00e676] bg-emerald-500/15 border border-emerald-500/30 px-4 py-1 rounded-md select-all">
+                                  {client.code}
+                                </div>
+                              </div>
+                            ) : isGeneratingCode ? (
+                              <div className="text-[11px] text-amber-500 font-bold animate-pulse text-center mt-1 py-1.5 bg-amber-500/5 rounded-lg border border-amber-500/10">
+                                ⏳ এই নাম্বারের জন্য pairing কোড জেনারেট হচ্ছে...
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {whatsappError && (
+                <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs leading-relaxed">
+                  ⚠️ {whatsappError}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 justify-center text-[10px] opacity-50 font-bold">
+                <span>🔒 End-to-end encrypted</span>
+                <span>•</span>
+                <span>Syncs automatically</span>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Reconnecting banner */}
+              {whatsappStatus === "connecting" && (
+                <div className="bg-amber-500/10 border-b border-amber-500/20 px-5 py-2.5 flex items-center gap-3 text-amber-600 dark:text-amber-400 text-xs shrink-0 select-none animate-pulse">
+                  <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping shrink-0" />
+                  <span className="font-semibold flex-1">সংযোগ বিচ্ছিন্ন হয়েছে। পুনরায় সংযোগ স্থাপন করা হচ্ছে...</span>
+                </div>
+              )}
+              {/* Archived Row */}
+              {!showArchivedOnly && contacts.some((c) => c.archive) && (
+                <div className="border-b border-black/5 dark:border-white/5 shrink-0">
+                  <button
+                    onClick={() => setShowArchivedOnly(true)}
+                    className="w-full px-5 py-3.5 flex items-center gap-4 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors cursor-pointer text-left"
+                  >
+                    <Archive size={20} className="text-[#00a884] dark:text-[#00e676] shrink-0" />
+                    <span className="font-semibold text-[15px] text-[#111b21] dark:text-[#e9edef] flex-1">Archived</span>
+                    <span className="bg-[#00a884] dark:bg-[#00e676] text-white dark:text-[#0b141a] text-xs font-bold px-2 py-0.5 rounded-full">
+                      {contacts.filter((c) => c.archive).length}
+                    </span>
+                  </button>
+                </div>
+              )}
+
+              {/* Chat rows list */}
+              <div className="flex-1 overflow-y-auto overflow-x-hidden divide-y divide-black/[0.03] dark:divide-white/[0.03] pb-24">
+                {filteredContacts.length === 0 ? (
+                  <div className="p-8 text-center text-xs opacity-50">No chats found.</div>
+                ) : (
+              filteredContacts.map((contact) => {
+                const lastMsg = lastMessages[contact.id];
+                const isActive = activeContactId === contact.id;
+                const hasUnread = contact.unreadCount > 0 && !isActive;
+
+                return (
+                  <div
+                    key={contact.id}
+                    onClick={() => {
+                      if (isLongPressActive.current) {
+                        isLongPressActive.current = false;
+                        return;
+                      }
+                      onSelectContact(contact.id);
+                    }}
+                    onTouchStart={(e) => handleTouchStart(e, contact.id)}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                    onMouseDown={(e) => handleMouseDown(e, contact.id)}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseLeave}
+                    onContextMenu={(e) => handleContextMenu(e, contact.id)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        onSelectContact(contact.id);
+                      }
+                    }}
+                    className={`w-full text-left flex items-center gap-3.5 px-4 py-3.5 transition-colors select-none cursor-pointer border-l-4 group ${
+                      isActive
+                        ? "bg-black/[0.04] dark:bg-white/[0.04] border-[#00a884]"
+                        : "hover:bg-black/[0.02] dark:hover:bg-white/[0.02] border-transparent"
+                    }`}
+                  >
+                    {/* Profile Avatar circle */}
+                    <div
+                      className="relative shrink-0 cursor-pointer hover:scale-105 transition-transform duration-200"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onViewProfile) {
+                          onViewProfile(contact.id);
+                        } else {
+                          onSelectContact(contact.id);
+                        }
+                      }}
+                      title={`View ${contact.name}'s Profile Info`}
+                    >
+                      {contact.avatar === "letter-S" ? (
+                        <div className="w-12 h-12 rounded-full overflow-hidden flex items-center justify-center bg-[#eae6f9] dark:bg-[#2e2b44] text-[#6b42f5] dark:text-[#a28dfa] text-xl font-bold select-none">
+                          S
+                        </div>
+                      ) : contact.avatar === "black-circle" ? (
+                        <div className="w-12 h-12 rounded-full bg-black border border-gray-800" />
+                      ) : contact.avatar ? (
+                        <div className="w-12 h-12 rounded-full overflow-hidden border border-black/5 dark:border-white/5 bg-gray-100">
+                          <img
+                            src={contact.avatar || null}
+                            alt={contact.name}
+                            className="w-full h-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        </div>
+                      ) : (
+                        <div className="w-12 h-12 rounded-full overflow-hidden flex items-center justify-center bg-gray-200 dark:bg-gray-800 text-gray-500 font-bold">
+                          {(contact.name || "User").slice(0, 1).toUpperCase()}
+                        </div>
+                      )}
+
+                      {/* Online dot indicator */}
+                      {contact.status === "online" && (
+                        <div className="absolute bottom-0.5 right-0.5 w-3 h-3 bg-[#00e676] rounded-full border-2 border-white dark:border-[#0b141a]" />
+                      )}
+                    </div>
+
+                    {/* Chat Text Details Column */}
+                    <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                      {/* Name & Time Row */}
+                      <div className="flex justify-between items-baseline">
+                        <span className="font-semibold text-[15px] truncate text-[#111b21] dark:text-[#e9edef] flex items-center gap-1.5">
+                          {contact.name}
+                          {contact.isPinned && <Pin size={12} className="text-orange-500 fill-orange-500/20 rotate-45 shrink-0" />}
+                          {contact.isMuted && <VolumeX size={12} className="text-gray-400 shrink-0" />}
+                          {contact.isBlocked && <span className="bg-red-500/10 text-red-500 text-[8px] px-1 rounded font-extrabold shrink-0">BLOCKED</span>}
+                          {contact.isFavorite && <Heart size={10} className="fill-red-500 text-red-500 shrink-0" />}
+                        </span>
+                        <span
+                          className={`text-[11px] font-medium shrink-0 ${
+                            hasUnread ? "text-[#00a884]" : "text-gray-400 dark:text-gray-500"
+                          }`}
+                        >
+                          {lastMsg ? lastMsg.timestamp : ""}
+                        </span>
+                      </div>
+
+                      {/* Msg text & Unread badge row */}
+                      <div className="flex justify-between items-center">
+                        <div className="flex items-center gap-1.5 text-xs text-[#667781] dark:text-[#8696a0] truncate flex-1 pr-2">
+                          {lastMsg && renderLastMessageStatus(lastMsg)}
+                          {renderLastMessageText(contact, lastMsg)}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 relative">
+                          {/* Hover Archive/Unarchive Action */}
+                          {onArchiveContact && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onArchiveContact(contact.id, !contact.archive);
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 text-gray-500 hover:text-[#00a884] dark:text-gray-400 dark:hover:text-[#00e676] hover:scale-110 transition-all cursor-pointer shrink-0"
+                              title={contact.archive ? "Unarchive chat" : "Archive chat"}
+                            >
+                              <Archive size={14} />
+                            </button>
+                          )}
+
+                          {/* Chevron Menu Trigger for Context Menu */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setLongPressContact({
+                                id: contact.id,
+                                x: rect.left - 180,
+                                y: rect.bottom + 4,
+                              });
+                            }}
+                            className="opacity-0 group-hover:opacity-100 p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 text-gray-500 hover:text-[#00a884] dark:text-gray-400 dark:hover:text-[#00e676] transition-all cursor-pointer shrink-0"
+                            title="Chat options"
+                          >
+                            <ChevronDown size={14} />
+                          </button>
+
+                          {/* Unread circle badge */}
+                          {hasUnread && (
+                            <div className="bg-[#00a884] text-white font-bold text-[11px] h-5 w-5 flex items-center justify-center rounded-full shrink-0 animate-scale-up">
+                              {contact.unreadCount}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+            </>
+          )}
+
+
+        </div>
+      )}
+
+      {/* 2. UPDATES TAB CONTENT */}
+      {activeTab === "updates" && (
+        <div className="flex-1 flex flex-col min-h-0 p-5 pb-24 overflow-y-auto overflow-x-hidden">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-bold text-[#111b21] dark:text-[#e9edef]">Updates</h2>
+            <button
+              onClick={() => alert("Recent channel settings")}
+              className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-full"
+            >
+              <MoreVertical size={20} />
+            </button>
+          </div>
+
+          {/* Status Section */}
+          <div className="mb-6">
+            <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-4 uppercase tracking-wider text-[11px]">Status</h3>
+            <div className="flex items-center gap-4.5">
+              <div className="relative cursor-pointer">
+                <img
+                  src={userProfile.avatar || null}
+                  alt="My Status"
+                  className="w-12 h-12 rounded-full object-cover border-2 border-gray-300 dark:border-gray-700 p-0.5"
+                />
+                <div className="absolute bottom-0 right-0 bg-[#00a884] text-white p-0.5 rounded-full border border-white dark:border-[#0b141a]">
+                  <Plus size={12} />
+                </div>
+              </div>
+              <div>
+                <h4 className="font-bold text-sm">My Status</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Tap to add status update</p>
+              </div>
+            </div>
+          </div>
+
+
+        </div>
+      )}
+
+      {/* 4. CALLS TAB CONTENT */}
+      {activeTab === "calls" && (
+        <div className="flex-1 flex flex-col min-h-0 p-5 pb-24 overflow-y-auto overflow-x-hidden">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-bold text-[#111b21] dark:text-[#e9edef]">Calls</h2>
+            <button
+              onClick={() => alert("Calls log settings")}
+              className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-full"
+            >
+              <MoreVertical size={20} />
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            {/* Create Call Link */}
+            <div className="flex items-center gap-4 cursor-pointer mb-5">
+              <div className="w-11 h-11 rounded-full bg-[#e1f3ec] dark:bg-[#122e23] text-[#00a884] flex items-center justify-center">
+                <PlusCircle size={22} />
+              </div>
+              <div>
+                <h4 className="font-bold text-xs text-[#111b21] dark:text-[#e9edef]">Create call link</h4>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400">Share a link for your WhatsApp call</p>
+              </div>
+            </div>
+
+            <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider text-[11px] mb-2">Recent Call Logs</h3>
+
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <p className="text-xs text-gray-400 dark:text-gray-500">No recent call logs</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. YOU / SETTINGS TAB CONTENT */}
+      {activeTab === "you" && (
+        <div className="flex-1 flex flex-col min-h-0 p-5 pb-24 overflow-y-auto overflow-x-hidden">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-bold text-[#111b21] dark:text-[#e9edef]">You</h2>
+            <button
+              onClick={() => alert("Settings configuration")}
+              className="p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-full"
+            >
+              <MoreVertical size={20} />
+            </button>
+          </div>
+
+          {/* Large user profile card */}
+          <div
+            onClick={onOpenProfile}
+            className="flex items-center gap-4.5 p-4 bg-black/5 dark:bg-white/5 rounded-2xl cursor-pointer hover:scale-[1.01] transition-transform"
+          >
+            <img
+              src={userProfile.avatar || null}
+              alt="Me"
+              className="w-14 h-14 rounded-full object-cover border border-emerald-500/20"
+              referrerPolicy="no-referrer"
+            />
+            <div className="flex-1 min-w-0">
+              <h3 className="font-bold text-sm truncate">{userProfile.name}</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">{userProfile.about}</p>
+              <p className="text-[10px] text-gray-400 font-mono mt-0.5">{userProfile.phoneNumber}</p>
+            </div>
+            <Settings size={18} className="text-gray-400" />
+          </div>
+
+          {/* Quick links settings list */}
+          <div className="mt-5 space-y-1 divide-y divide-gray-100 dark:divide-gray-850">
+            {/* 1. Profile */}
+            <button
+              onClick={onOpenProfile}
+              className="w-full text-left px-3 py-3 hover:bg-black/5 dark:hover:bg-white/5 flex items-start gap-4 cursor-pointer transition-colors"
+            >
+              <div className="mt-0.5 text-gray-500 dark:text-gray-400 shrink-0">
+                <User size={20} className="stroke-[1.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">Profile</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">Name, profile picture, username</p>
+              </div>
+              <ChevronRight size={16} className="text-gray-400 shrink-0 self-center" />
+            </button>
+
+            {/* 2. Account */}
+            <button
+              onClick={() => setShowAccountModal(true)}
+              className="w-full text-left px-3 py-3 hover:bg-black/5 dark:hover:bg-white/5 flex items-start gap-4 cursor-pointer transition-colors pt-3"
+            >
+              <div className="mt-0.5 text-gray-500 dark:text-gray-400 shrink-0">
+                <Key size={20} className="stroke-[1.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">Account</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">Security notifications, account info</p>
+              </div>
+              <ChevronRight size={16} className="text-gray-400 shrink-0 self-center" />
+            </button>
+
+            {/* 3. Privacy */}
+            <button
+              onClick={() => setShowPrivacyModal(true)}
+              className="w-full text-left px-3 py-3 hover:bg-black/5 dark:hover:bg-white/5 flex items-start gap-4 cursor-pointer transition-colors pt-3"
+            >
+              <div className="mt-0.5 text-gray-500 dark:text-gray-400 shrink-0">
+                <Lock size={20} className="stroke-[1.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">Privacy</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">Blocked contacts, disappearing messages</p>
+              </div>
+              <ChevronRight size={16} className="text-gray-400 shrink-0 self-center" />
+            </button>
+
+            {/* 4. Chats */}
+            <button
+              onClick={() => setShowChatsModal(true)}
+              className="w-full text-left px-3 py-3 hover:bg-black/5 dark:hover:bg-white/5 flex items-start gap-4 cursor-pointer transition-colors pt-3"
+            >
+              <div className="mt-0.5 text-gray-500 dark:text-gray-400 shrink-0">
+                <MessageSquare size={20} className="stroke-[1.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">Chats</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">Theme, wallpaper, chat settings</p>
+              </div>
+              <ChevronRight size={16} className="text-gray-400 shrink-0 self-center" />
+            </button>
+
+            {/* 5. Notifications */}
+            <button
+              onClick={() => setShowNotificationsModal(true)}
+              className="w-full text-left px-3 py-3 hover:bg-black/5 dark:hover:bg-white/5 flex items-start gap-4 cursor-pointer transition-colors pt-3"
+            >
+              <div className="mt-0.5 text-gray-500 dark:text-gray-400 shrink-0">
+                <Bell size={20} className="stroke-[1.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">Notifications</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">Messages, groups, sounds</p>
+              </div>
+              <ChevronRight size={16} className="text-gray-400 shrink-0 self-center" />
+            </button>
+
+            {/* 6. Keyboard shortcuts */}
+            <button
+              onClick={() => setShowShortcutsModal(true)}
+              className="w-full text-left px-3 py-3 hover:bg-black/5 dark:hover:bg-white/5 flex items-start gap-4 cursor-pointer transition-colors pt-3"
+            >
+              <div className="mt-0.5 text-gray-500 dark:text-gray-400 shrink-0">
+                <Keyboard size={20} className="stroke-[1.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">Keyboard shortcuts</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">Quick actions</p>
+              </div>
+              <ChevronRight size={16} className="text-gray-400 shrink-0 self-center" />
+            </button>
+
+            {/* 7. Help and feedback */}
+            <button
+              onClick={() => setShowHelpModal(true)}
+              className="w-full text-left px-3 py-3 hover:bg-black/5 dark:hover:bg-white/5 flex items-start gap-4 cursor-pointer transition-colors pt-3"
+            >
+              <div className="mt-0.5 text-gray-500 dark:text-gray-400 shrink-0">
+                <HelpCircle size={20} className="stroke-[1.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">Help and feedback</h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">Help center, contact us, privacy policy</p>
+              </div>
+              <ChevronRight size={16} className="text-gray-400 shrink-0 self-center" />
+            </button>
+
+            {/* 8. Log out */}
+            <button
+              onClick={handleDisconnectWhatsapp}
+              className="w-full text-left px-3 py-3.5 hover:bg-red-500/5 dark:hover:bg-red-500/10 flex items-center gap-4 cursor-pointer transition-colors pt-4 border-t border-gray-100 dark:border-gray-800 text-[#ea4335]"
+            >
+              <div className="text-[#ea4335] shrink-0">
+                <LogOut size={20} className="stroke-[1.5]" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-sm font-semibold leading-tight">Log out</h4>
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* BOTTOM MOBILE-STYLE NAVIGATION BAR */}
+      <div
+        className={`absolute bottom-0 inset-x-0 h-16 border-t flex items-center justify-around px-2 z-30 select-none ${
+          isDark ? "bg-[#0b141a] border-gray-800 text-[#aebac1]" : "bg-white border-gray-200 text-[#54656f]"
+        }`}
+      >
+        {/* Tab 1: Chats */}
+        <button
+          onClick={() => setActiveTab("chats")}
+          className="flex flex-col items-center gap-1 py-1 cursor-pointer w-16 text-center select-none"
+        >
+          <div className="relative">
+            <div
+              className={`px-5 py-1 rounded-full transition-all duration-200 flex items-center justify-center ${
+                activeTab === "chats"
+                  ? isDark
+                    ? "bg-[#102d26] text-[#00e676]"
+                    : "bg-[#d9fdd3] text-[#0b141a]"
+                  : "hover:bg-black/5 dark:hover:bg-white/5 text-inherit"
+              }`}
+            >
+              <MessageSquare size={20} />
+            </div>
+            {/* Chats tab unread count badge overlay */}
+            <div className="absolute -top-1.5 -right-1.5 bg-[#00e676] text-[#0b141a] font-extrabold text-[10px] w-[18px] h-[18px] rounded-full flex items-center justify-center border-2 border-white dark:border-[#0b141a]">
+              3
+            </div>
+          </div>
+          <span className={`text-[10px] font-bold ${activeTab === "chats" ? "text-emerald-500 dark:text-[#00e676]" : "opacity-75"}`}>
+            Chats
+          </span>
+        </button>
+
+        {/* Tab 2: Updates */}
+        <button
+          onClick={() => setActiveTab("updates")}
+          className="flex flex-col items-center gap-1 py-1 cursor-pointer w-16 text-center select-none"
+        >
+          <div
+            className={`px-5 py-1 rounded-full transition-all duration-200 flex items-center justify-center ${
+              activeTab === "updates"
+                ? isDark
+                  ? "bg-[#102d26] text-[#00e676]"
+                  : "bg-[#d9fdd3] text-[#0b141a]"
+                : "hover:bg-black/5 dark:hover:bg-white/5 text-inherit"
+            }`}
+          >
+            <Compass size={20} />
+          </div>
+          <span className={`text-[10px] font-bold ${activeTab === "updates" ? "text-emerald-500 dark:text-[#00e676]" : "opacity-75"}`}>
+            Updates
+          </span>
+        </button>
+
+        {/* Tab 4: Calls */}
+        <button
+          onClick={() => setActiveTab("calls")}
+          className="flex flex-col items-center gap-1 py-1 cursor-pointer w-16 text-center select-none"
+        >
+          <div
+            className={`px-5 py-1 rounded-full transition-all duration-200 flex items-center justify-center ${
+              activeTab === "calls"
+                ? isDark
+                  ? "bg-[#102d26] text-[#00e676]"
+                  : "bg-[#d9fdd3] text-[#0b141a]"
+                : "hover:bg-black/5 dark:hover:bg-white/5 text-inherit"
+            }`}
+          >
+            <Phone size={20} />
+          </div>
+          <span className={`text-[10px] font-bold ${activeTab === "calls" ? "text-emerald-500 dark:text-[#00e676]" : "opacity-75"}`}>
+            Calls
+          </span>
+        </button>
+
+        {/* Tab 5: You */}
+        <button
+          onClick={() => setActiveTab("you")}
+          className="flex flex-col items-center gap-1 py-1 cursor-pointer w-16 text-center select-none"
+        >
+          <div
+            className={`w-7 h-7 rounded-full overflow-hidden border-2 transition-all duration-200 flex items-center justify-center shrink-0 ${
+              activeTab === "you" ? "border-emerald-500 scale-105" : "border-transparent opacity-85"
+            }`}
+          >
+            <img src={userProfile.avatar || null} alt="You" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+          </div>
+          <span className={`text-[10px] font-bold ${activeTab === "you" ? "text-emerald-500 dark:text-[#00e676]" : "opacity-75"}`}>
+            You
+          </span>
+        </button>
+      </div>
+
+      {/* DIALOG MODAL 1: JOIN GROUP BY INVITE LINK */}
+      {showInviteModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-sm rounded-xl shadow-2xl p-5 border ${
+              isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+            }`}
+            style={{ animation: "scaleUp 0.15s ease-out" }}
+          >
+            <div className="flex justify-between items-center border-b pb-2 mb-4 border-black/10 dark:border-white/10">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">🔗 Join Group by Invite Link</h3>
+              <button
+                onClick={() => setShowInviteModal(false)}
+                className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleCreateInviteGroup} className="space-y-4">
+              <div>
+                <label className="text-[10px] font-bold uppercase opacity-65 mb-1 block">Group Name</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g., Coding Enthusiasts 💻"
+                  value={inviteGroupName}
+                  onChange={(e) => setInviteGroupName(e.target.value)}
+                  className={`w-full p-2.5 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                  }`}
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase opacity-65 mb-1 block">Invite Link (URL)</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g., https://chat.whatsapp.com/EnthusiastsCode"
+                  value={inviteLink}
+                  onChange={(e) => setInviteLink(e.target.value)}
+                  className={`w-full p-2.5 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                  }`}
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 bg-[#00a884] hover:bg-[#008069] text-white rounded text-xs font-bold shadow-md cursor-pointer transition-colors"
+                id="join-group-confirm-btn"
+              >
+                Join Group 🚀
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* DIALOG MODAL 2: LINKED DEVICES (MULTI-DEVICE VISUALIZER) */}
+      {showMultiDeviceModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-md rounded-xl shadow-2xl p-5 border transition-all ${
+              isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+            }`}
+            style={{ animation: "scaleUp 0.15s ease-out" }}
+          >
+            <div className="flex justify-between items-center border-b pb-2 mb-4 border-black/10 dark:border-white/10">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">💻 WhatsApp Multi-Device Sync</h3>
+              <button
+                onClick={() => setShowMultiDeviceModal(false)}
+                className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="text-xs opacity-75 leading-relaxed mb-4">
+              Your messages are protected with end-to-end encryption and sync seamlessly without requiring your primary phone to remain online.
+            </p>
+
+            <div className="space-y-2.5">
+              <h4 className="text-[10px] font-bold uppercase opacity-55 tracking-wider">Currently Linked Devices</h4>
+
+              {/* LIVE ACTIVE CONNECTION */}
+              {whatsappStatus === "connected" && connectedUser ? (
+                <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-500/10 border border-[#00a884]/20 text-xs">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-full bg-[#00a884]/20 flex items-center justify-center text-[#00a884] font-bold">
+                      🟢
+                    </div>
+                    <div>
+                      <h4 className="font-bold">{connectedUser.name}</h4>
+                      <p className="text-[10px] opacity-65">+{connectedUser.phoneNumber} • Active Now</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleDisconnectWhatsapp}
+                    className="text-red-500 hover:underline text-[10px] font-bold cursor-pointer"
+                  >
+                    Log Out
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between p-2.5 rounded bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 text-xs">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-[#e1f3ec] dark:bg-[#122e23] text-[#00a884] rounded-full">
+                        <Laptop size={16} />
+                      </div>
+                      <div>
+                        <h4 className="font-bold">Google Chrome (This session)</h4>
+                        <p className="text-[10px] opacity-65">Dhaka, Bangladesh • Active Now</p>
+                      </div>
+                    </div>
+                    <span className="text-[9px] bg-[#e1f3ec] text-[#00a884] px-2 py-0.5 rounded-full font-bold">CURRENT</span>
+                  </div>
+
+                  <div className="flex items-center justify-between p-2.5 rounded bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 text-xs">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-gray-400/15 text-gray-400 rounded-full">
+                        <Laptop size={16} />
+                      </div>
+                      <div>
+                        <h4 className="font-bold">WhatsApp Desktop (Windows)</h4>
+                        <p className="text-[10px] opacity-65">Dhaka, Bangladesh • Last active Yesterday</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => alert("Unlinked desktop device successfully.")}
+                      className="text-red-500 hover:underline text-[10px] font-bold cursor-pointer"
+                    >
+                      Log Out
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* ERROR DISPLAY */}
+            {whatsappError && (
+              <div className="mt-3 p-2.5 rounded bg-red-500/10 border border-red-500/20 text-red-500 text-[11px] leading-relaxed">
+                ⚠️ {whatsappError}
+              </div>
+            )}
+
+            {/* DYNAMIC PAIRING INTERFACE */}
+            {showPhoneInput && whatsappStatus !== "connected" && (
+              <div className="mt-4 p-4 rounded-xl bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5">
+                <h4 className="text-xs font-bold mb-1.5 flex items-center gap-1 text-[#00a884]">
+                  📞 Link with Phone Number
+                </h4>
+                <p className="text-[11px] opacity-75 mb-3 leading-relaxed">
+                  Enter your phone number with country code (e.g. +8801XXXXXXXX) to request your pairing code.
+                </p>
+                
+                <div className="flex gap-2">
+                  <input
+                    type="tel"
+                    placeholder="e.g. +8801700000000"
+                    value={phoneNumber}
+                    onChange={(e) => setPhoneNumber(e.target.value)}
+                    className="flex-1 bg-white dark:bg-gray-800 border border-black/15 dark:border-white/15 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#00a884] text-inherit"
+                    disabled={whatsappStatus === "connecting"}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && phoneNumber && whatsappStatus !== "connecting") {
+                        handleStartPairing(phoneNumber);
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => handleStartPairing(phoneNumber)}
+                    disabled={!phoneNumber || whatsappStatus === "connecting"}
+                    className="bg-[#00a884] hover:bg-[#008069] disabled:opacity-50 text-white font-bold text-xs px-4 py-1.5 rounded-lg transition-colors cursor-pointer"
+                  >
+                    {whatsappStatus === "connecting" ? "Loading..." : "Get Code"}
+                  </button>
+                </div>
+
+                {whatsappStatus === "pairing-code-ready" && pairingCode && (
+                  <div className="mt-4 text-center">
+                    <p className="text-[11px] opacity-75 mb-2 font-semibold">Enter this code on your phone:</p>
+                    <div className="inline-block bg-[#00a884]/15 border border-[#00a884]/30 text-[#00a884] dark:text-[#00e676] font-mono font-extrabold text-xl tracking-widest px-6 py-2.5 rounded-lg select-all">
+                      {pairingCode}
+                    </div>
+                    <ol className="text-left text-[10px] opacity-75 mt-3 space-y-1.5 list-decimal list-inside leading-normal border-t border-black/5 dark:border-white/5 pt-3">
+                      <li>Open WhatsApp on your primary phone</li>
+                      <li>Go to Linked Devices &gt; Link a Device</li>
+                      <li>Select "Link with phone number instead"</li>
+                      <li>Enter the 8-character code shown above</li>
+                    </ol>
+                  </div>
+                )}
+
+                <div className="flex justify-between items-center mt-4 pt-3 border-t border-black/5 dark:border-white/5">
+                  <button
+                    onClick={() => {
+                      setShowPhoneInput(false);
+                    }}
+                    className="text-xs opacity-75 hover:opacity-100 transition-opacity"
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowPhoneInput(false);
+                      handleStartPairing(); // start QR code pairing
+                    }}
+                    className="text-xs text-[#00a884] hover:underline font-bold"
+                  >
+                    Use QR Code Instead
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* QR CODE INTERFACE */}
+            {!showPhoneInput && whatsappStatus !== "disconnected" && whatsappStatus !== "connected" && (
+              <div className="mt-4 p-4 rounded-xl bg-black/5 dark:bg-white/5 border border-black/5 dark:border-white/5 text-center">
+                <h4 className="text-xs font-bold mb-2">Scan QR Code</h4>
+                {whatsappStatus === "connecting" && (
+                  <div className="flex flex-col items-center py-6 justify-center gap-2">
+                    <RefreshCw className="animate-spin text-[#00a884]" size={24} />
+                    <p className="text-[11px] opacity-75">Starting connection...</p>
+                  </div>
+                )}
+                
+                {whatsappStatus === "qr-ready" && qrCodeData && (
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="bg-white p-3 rounded-lg border border-gray-200 shadow-md">
+                      <img src={qrCodeData} alt="WhatsApp QR Code" className="w-48 h-48 mx-auto" />
+                    </div>
+                    <p className="text-[10px] opacity-75 leading-normal max-w-[280px]">
+                      Open WhatsApp on your phone, go to Linked Devices &gt; Link a Device, and scan the code.
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex justify-between items-center mt-4 pt-3 border-t border-black/5 dark:border-white/5">
+                  <button
+                    onClick={() => {
+                      handleDisconnectWhatsapp();
+                    }}
+                    className="text-xs opacity-75 hover:opacity-100 transition-opacity"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowPhoneInput(true);
+                    }}
+                    className="text-xs text-[#00a884] hover:underline font-bold"
+                  >
+                    Use Phone Number instead
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* DEFAULT BUTTONS */}
+            {!showPhoneInput && whatsappStatus === "disconnected" && (
+              <div className="flex gap-2 mt-5">
+                <button
+                  onClick={() => {
+                    setShowPhoneInput(true);
+                  }}
+                  className="flex-1 py-2.5 border border-[#00a884] hover:bg-[#00a884]/10 text-[#00a884] font-bold text-xs rounded transition-all cursor-pointer text-center"
+                >
+                  Pair New Device
+                </button>
+                <button
+                  onClick={() => handleStartPairing()}
+                  className="flex-1 py-2.5 bg-[#00a884] hover:bg-[#008069] text-white font-bold text-xs rounded transition-all cursor-pointer text-center"
+                >
+                  Scan QR Code
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* DIALOG MODAL: ACCOUNT SETTINGS */}
+      {showAccountModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-sm rounded-xl shadow-2xl p-5 border transition-all ${
+              isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+            }`}
+            style={{ animation: "scaleUp 0.15s ease-out" }}
+          >
+            <div className="flex justify-between items-center border-b pb-2 mb-4 border-black/10 dark:border-white/10">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">🔑 Account Settings</h3>
+              <button
+                onClick={() => setShowAccountModal(false)}
+                className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-2 rounded-lg bg-black/5 dark:bg-white/5 text-xs">
+                <div>
+                  <h4 className="font-bold">Security Notifications</h4>
+                  <p className="text-[10px] opacity-75">Show security notifications on this device</p>
+                </div>
+                <input type="checkbox" defaultChecked className="accent-[#00a884] cursor-pointer" />
+              </div>
+
+              <button
+                onClick={() => alert("Two-step verification has been activated for your account.")}
+                className="w-full py-2 bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 rounded text-xs font-bold transition-all text-left px-3 flex items-center justify-between cursor-pointer text-inherit"
+              >
+                <span>🛡️ Two-step verification</span>
+                <span className="text-emerald-500 text-[10px]">Active</span>
+              </button>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase opacity-65 block">Linked Email Address</label>
+                <input
+                  type="email"
+                  placeholder="name@domain.com"
+                  defaultValue={userProfile.email || "user@whatsapp-web.io"}
+                  className={`w-full p-2.5 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                  }`}
+                />
+              </div>
+
+              <button
+                onClick={() => alert("Your account report request has been sent. It will be ready in 3 days.")}
+                className="w-full py-2.5 bg-[#00a884] hover:bg-[#008069] text-white rounded text-xs font-bold transition-all cursor-pointer"
+              >
+                Request Account Info 📁
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DIALOG MODAL: PRIVACY SETTINGS */}
+      {showPrivacyModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-sm rounded-xl shadow-2xl p-5 border transition-all ${
+              isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+            }`}
+            style={{ animation: "scaleUp 0.15s ease-out" }}
+          >
+            <div className="flex justify-between items-center border-b pb-2 mb-4 border-black/10 dark:border-white/10">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">🔒 Privacy Settings</h3>
+              <button
+                onClick={() => setShowPrivacyModal(false)}
+                className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="space-y-3.5">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase opacity-65 block">Last Seen & Online</label>
+                <select
+                  className={`w-full p-2 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                  }`}
+                  defaultValue="contacts"
+                >
+                  <option value="everyone">Everyone</option>
+                  <option value="contacts">My Contacts</option>
+                  <option value="nobody">Nobody</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase opacity-65 block">Profile Photo</label>
+                <select
+                  className={`w-full p-2 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                  }`}
+                  defaultValue="everyone"
+                >
+                  <option value="everyone">Everyone</option>
+                  <option value="contacts">My Contacts</option>
+                  <option value="nobody">Nobody</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase opacity-65 block">Default Message Timer (Disappearing Messages)</label>
+                <select
+                  className={`w-full p-2 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                  }`}
+                  defaultValue="off"
+                >
+                  <option value="off">Off</option>
+                  <option value="24h">24 Hours</option>
+                  <option value="7d">7 Days</option>
+                  <option value="90d">90 Days</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded bg-black/5 dark:bg-white/5 text-xs font-bold">
+                <span>🚫 Blocked contacts</span>
+                <span className="opacity-60 text-xs">2 contacts</span>
+              </div>
+
+              <div className="flex items-center justify-between p-2 rounded bg-black/5 dark:bg-white/5 text-xs font-bold">
+                <span>Read Receipts</span>
+                <input type="checkbox" defaultChecked className="accent-[#00a884] cursor-pointer" />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DIALOG MODAL: CHATS SETTINGS */}
+      {showChatsModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-sm rounded-xl shadow-2xl p-5 border transition-all ${
+              isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+            }`}
+            style={{ animation: "scaleUp 0.15s ease-out" }}
+          >
+            <div className="flex justify-between items-center border-b pb-2 mb-4 border-black/10 dark:border-white/10">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">💬 Chats Settings</h3>
+              <button
+                onClick={() => setShowChatsModal(false)}
+                className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] font-bold uppercase opacity-65 mb-1.5 block">Application Theme</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => {
+                      if (isDark) onToggleTheme();
+                    }}
+                    className={`py-2 text-xs font-bold border rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                      !isDark 
+                        ? "bg-[#d9fdd3] border-[#00a884]/30 text-[#0b141a]" 
+                        : "bg-black/10 border-gray-700 hover:bg-black/20 text-gray-300"
+                    }`}
+                  >
+                    <Sun size={14} className="text-yellow-500" /> Light Theme
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!isDark) onToggleTheme();
+                    }}
+                    className={`py-2 text-xs font-bold border rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                      isDark 
+                        ? "bg-[#102d26] border-[#00a884] text-[#00e676]" 
+                        : "bg-black/5 border-gray-200 hover:bg-black/10 text-gray-600"
+                    }`}
+                  >
+                    <Moon size={14} /> Dark Theme
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase opacity-65 mb-1.5 block">Chat Wallpaper Profile</label>
+                <div className="flex gap-2">
+                  {["#efeae2", "#111b21", "#e1f3ec", "#fff9db", "#eae8f3"].map((color) => (
+                    <button
+                      key={color}
+                      onClick={() => alert(`Wallpaper set to ${color} successfully!`)}
+                      className="w-6 h-6 rounded-full border border-black/10 dark:border-white/20 cursor-pointer shadow-xs hover:scale-110 transition-transform"
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-2 border-t border-black/5 dark:border-white/5">
+                <div className="flex items-center justify-between text-xs">
+                  <div>
+                    <h4 className="font-bold">Enter is send</h4>
+                    <p className="text-[10px] opacity-75">Enter key will send your message</p>
+                  </div>
+                  <input type="checkbox" defaultChecked className="accent-[#00a884] cursor-pointer" />
+                </div>
+
+                <div className="flex items-center justify-between text-xs">
+                  <div>
+                    <h4 className="font-bold">Media auto-download</h4>
+                    <p className="text-[10px] opacity-75">Automatically download media files</p>
+                  </div>
+                  <input type="checkbox" className="accent-[#00a884] cursor-pointer" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DIALOG MODAL: NOTIFICATIONS SETTINGS */}
+      {showNotificationsModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-sm rounded-xl shadow-2xl p-5 border transition-all ${
+              isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+            }`}
+            style={{ animation: "scaleUp 0.15s ease-out" }}
+          >
+            <div className="flex justify-between items-center border-b pb-2 mb-4 border-black/10 dark:border-white/10">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">🔔 Notifications Settings</h3>
+              <button
+                onClick={() => setShowNotificationsModal(false)}
+                className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-xs">
+                <div>
+                  <h4 className="font-bold">Conversation Tones</h4>
+                  <p className="text-[10px] opacity-75">Play sounds for incoming and outgoing messages</p>
+                </div>
+                <input type="checkbox" defaultChecked className="accent-[#00a884] cursor-pointer" />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase opacity-65 block">Message Notification Sound</label>
+                <select
+                  className={`w-full p-2 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                  }`}
+                  defaultValue="default"
+                >
+                  <option value="default">Default Ringtone (WhatsApp Chime)</option>
+                  <option value="bubble">Playful Bubble pop</option>
+                  <option value="bell">Soft Bell ring</option>
+                  <option value="silent">None (Silent)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold uppercase opacity-65 block">Group Notification Sound</label>
+                <select
+                  className={`w-full p-2 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                  }`}
+                  defaultValue="group-default"
+                >
+                  <option value="group-default">Default Group Chime</option>
+                  <option value="ding">Soft Ding</option>
+                  <option value="silent">None (Silent)</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-between text-xs">
+                <div>
+                  <h4 className="font-bold">High Priority Notifications</h4>
+                  <p className="text-[10px] opacity-75">Show previews at top of screen</p>
+                </div>
+                <input type="checkbox" defaultChecked className="accent-[#00a884] cursor-pointer" />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DIALOG MODAL: KEYBOARD SHORTCUTS */}
+      {showShortcutsModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-sm rounded-xl shadow-2xl p-5 border transition-all ${
+              isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+            }`}
+            style={{ animation: "scaleUp 0.15s ease-out" }}
+          >
+            <div className="flex justify-between items-center border-b pb-2 mb-4 border-black/10 dark:border-white/10">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">⌨️ Keyboard Shortcuts</h3>
+              <button
+                onClick={() => setShowShortcutsModal(false)}
+                className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="space-y-3.5">
+              {[
+                { keys: "Ctrl + N", action: "New Chat" },
+                { keys: "Ctrl + Shift + ]", action: "Next Chat" },
+                { keys: "Ctrl + Shift + [", action: "Previous Chat" },
+                { keys: "Ctrl + E", action: "Archive Chat" },
+                { keys: "Ctrl + Shift + M", action: "Mute Chat" },
+                { keys: "Ctrl + Shift + U", action: "Mark Unread" },
+                { keys: "Ctrl + Backspace", action: "Delete Chat" }
+              ].map((shortcut) => (
+                <div key={shortcut.keys} className="flex items-center justify-between text-xs py-0.5">
+                  <span className="opacity-75">{shortcut.action}</span>
+                  <kbd className="px-2 py-1 bg-black/5 dark:bg-white/10 border border-black/10 dark:border-white/10 rounded font-mono text-[10px] font-bold shadow-xs">
+                    {shortcut.keys}
+                  </kbd>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DIALOG MODAL: HELP AND FEEDBACK */}
+      {showHelpModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div
+            className={`w-full max-w-sm rounded-xl shadow-2xl p-5 border transition-all ${
+              isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+            }`}
+            style={{ animation: "scaleUp 0.15s ease-out" }}
+          >
+            <div className="flex justify-between items-center border-b pb-2 mb-4 border-black/10 dark:border-white/10">
+              <h3 className="font-bold text-sm flex items-center gap-1.5">❓ Help and Feedback</h3>
+              <button
+                onClick={() => setShowHelpModal(false)}
+                className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="text-xs leading-relaxed opacity-85">
+                Have questions or need assistance? We are here to help you get the most out of your WhatsApp Web Experience.
+              </div>
+
+              <div className="space-y-1.5">
+                <h4 className="text-[10px] font-bold uppercase opacity-65">Frequently Asked Topics</h4>
+                <div className="space-y-1">
+                  <button onClick={() => alert("Help Center Topic: Connection Issues")} className="w-full text-left text-[11px] text-[#00a884] dark:text-[#00e676] hover:underline font-semibold block cursor-pointer">
+                    • Troubleshooting WebSocket Connection
+                  </button>
+                  <button onClick={() => alert("Help Center Topic: Media Downloads")} className="w-full text-left text-[11px] text-[#00a884] dark:text-[#00e676] hover:underline font-semibold block cursor-pointer">
+                    • Secure Media download & preservation
+                  </button>
+                  <button onClick={() => alert("Help Center Topic: E2E Encryption")} className="w-full text-left text-[11px] text-[#00a884] dark:text-[#00e676] hover:underline font-semibold block cursor-pointer">
+                    • Encryption & Local IndexedDB privacy
+                  </button>
+                </div>
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  alert("Thank you! Your feedback has been submitted successfully.");
+                  setShowHelpModal(false);
+                }}
+                className="space-y-2 pt-2 border-t border-black/5 dark:border-white/5"
+              >
+                <label className="text-[10px] font-bold uppercase opacity-65 block">Send Feedback</label>
+                <textarea
+                  placeholder="Describe your issue or suggest improvements..."
+                  required
+                  rows={3}
+                  className={`w-full p-2.5 text-xs rounded border outline-none focus:ring-1 focus:ring-[#00a884] resize-none ${
+                    isDark ? "bg-[#2a3942] border-gray-600 text-white placeholder-gray-500" : "bg-gray-50 border-gray-200 text-gray-800 placeholder-gray-400"
+                  }`}
+                />
+                <button
+                  type="submit"
+                  className="w-full py-2 bg-[#00a884] hover:bg-[#008069] text-white rounded text-xs font-bold transition-all cursor-pointer"
+                >
+                  Submit Feedback 🚀
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. NEW CHAT DRAWER PANEL */}
+      <AnimatePresence>
+        {showNewChatDrawer && (
+          <motion.div
+            initial={{ x: "-100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "-100%" }}
+            transition={{ type: "tween", duration: 0.22 }}
+            className={`absolute inset-0 z-40 flex flex-col select-none ${
+              isDark ? "bg-[#0b141a] text-[#e9edef]" : "bg-white text-[#111b21]"
+            }`}
+          >
+            {/* Header */}
+            <div className={`px-5 py-4 flex items-center gap-6 shrink-0 shadow-sm ${
+              isDark ? "bg-[#202c33]" : "bg-[#008069] text-white"
+            }`}>
+              <button
+                onClick={() => {
+                  setShowNewChatDrawer(false);
+                  setShowKeypad(false);
+                }}
+                className="p-1 rounded-full hover:bg-black/10 dark:hover:bg-white/10 text-inherit cursor-pointer transition-colors"
+                title="Back to chats"
+              >
+                <ArrowLeft size={20} />
+              </button>
+              <h3 className="font-bold text-base flex-1">
+                {showKeypad ? "Dial Phone Number" : "New Chat"}
+              </h3>
+              <button
+                onClick={() => setShowKeypad(!showKeypad)}
+                className={`p-2 rounded-lg transition-colors cursor-pointer hover:bg-black/10 dark:hover:bg-white/10 flex items-center gap-1 text-xs font-bold ${
+                  showKeypad 
+                    ? "bg-emerald-500/20 text-[#00e676]" 
+                    : "text-inherit"
+                }`}
+                title="Phone Keypad / Dialer"
+              >
+                <LayoutGrid size={18} />
+                Dialer
+              </button>
+            </div>
+
+            {/* Body area */}
+            {showKeypad ? (
+              /* PHONE KEYPAD DIALER INTERFACE */
+              <div className="flex-1 flex flex-col p-6 overflow-y-auto overflow-x-hidden min-h-0 bg-black/5 dark:bg-white/5">
+                <div className="text-center mb-4">
+                  <p className="text-xs opacity-75 mb-1">Enter a phone number to message immediately</p>
+                  <p className="text-[10px] opacity-50">Saves as a temporary contact automatically</p>
+                </div>
+
+                {/* Display field */}
+                <div className="relative mb-6">
+                  <input
+                    type="text"
+                    value={dialNumber}
+                    readOnly
+                    placeholder="e.g. +8801700000000"
+                    className="w-full text-center text-2xl font-semibold tracking-wide bg-transparent border-b-2 border-emerald-500 py-3 focus:outline-none text-inherit placeholder:opacity-25"
+                  />
+                  {dialNumber && (
+                    <button
+                      onClick={() => setDialNumber("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-xs opacity-60 hover:opacity-100 font-bold hover:underline"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                {/* Keypad Buttons Grid */}
+                <div className="grid grid-cols-3 gap-3 max-w-[280px] mx-auto w-full mb-8">
+                  {[
+                    { num: "1", sub: " " },
+                    { num: "2", sub: "ABC" },
+                    { num: "3", sub: "DEF" },
+                    { num: "4", sub: "GHI" },
+                    { num: "5", sub: "JKL" },
+                    { num: "6", sub: "MNO" },
+                    { num: "7", sub: "PQRS" },
+                    { num: "8", sub: "TUV" },
+                    { num: "9", sub: "WXYZ" },
+                    { num: "+", sub: " " },
+                    { num: "0", sub: " " },
+                  ].map((k) => (
+                    <button
+                      key={k.num}
+                      onClick={() => setDialNumber((prev) => prev + k.num)}
+                      className="h-14 rounded-full flex flex-col items-center justify-center bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 active:scale-95 transition-all cursor-pointer border border-black/5 dark:border-white/5"
+                    >
+                      <span className="text-lg font-bold">{k.num}</span>
+                      <span className="text-[8px] tracking-wider opacity-60 font-semibold">{k.sub}</span>
+                    </button>
+                  ))}
+                  {/* Backspace Button */}
+                  <button
+                    onClick={() => setDialNumber((prev) => prev.slice(0, -1))}
+                    className="h-14 rounded-full flex items-center justify-center bg-red-500/5 hover:bg-red-500/15 text-red-500 dark:text-red-400 active:scale-95 transition-all cursor-pointer border border-red-500/10"
+                    title="Delete last digit"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                {/* Start Chat Button */}
+                <button
+                  onClick={() => {
+                    if (!dialNumber.trim()) return;
+                    if (onAddNewContact) {
+                      onAddNewContact(`+${dialNumber.trim().replace(/[^0-9]/g, "")}`, dialNumber.trim());
+                      setDialNumber("");
+                      setShowNewChatDrawer(false);
+                      setShowKeypad(false);
+                    }
+                  }}
+                  disabled={!dialNumber.trim()}
+                  className="w-full max-w-[280px] mx-auto py-3.5 bg-[#00a884] hover:bg-[#008069] disabled:opacity-50 text-white font-extrabold text-sm rounded-xl transition-all cursor-pointer text-center shadow-lg active:scale-95 flex items-center justify-center gap-2"
+                >
+                  <MessageSquarePlus size={18} />
+                  Start Conversation
+                </button>
+              </div>
+            ) : (
+              /* DEFAULT NEW CHAT FLOW (Options & Contacts List) */
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Search */}
+                <div className="p-3 shrink-0">
+                  <div className={`flex items-center gap-4 px-4 py-2 rounded-lg text-sm ${
+                    isDark ? "bg-[#202c33]" : "bg-[#f0f2f5]"
+                  }`}>
+                    <Search size={16} className="text-[#54656f] dark:text-[#aebac1] shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="Search name or phone number"
+                      className="bg-transparent border-none outline-none w-full text-inherit placeholder:opacity-60"
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {/* Scrollable list of options & grouped contacts */}
+                <div className="flex-1 overflow-y-auto overflow-x-hidden divide-y divide-black/5 dark:divide-white/5">
+                  {/* 1. Core Quick Launch Options */}
+                  <div className="py-2">
+                    {/* Option 1: New Group */}
+                    <button
+                      onClick={() => setShowNewGroupModal(true)}
+                      className="w-full px-5 py-3.5 flex items-center gap-4 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-left"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-[#00a884] text-white flex items-center justify-center">
+                        <Users size={20} />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-xs">New group</h4>
+                        <p className="text-[10px] opacity-60">Create a collaborative group conversation</p>
+                      </div>
+                    </button>
+
+                    {/* Option 2: New Contact */}
+                    <button
+                      onClick={() => setShowNewContactModal(true)}
+                      className="w-full px-5 py-3.5 flex items-center gap-4 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-left"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-[#00a884] text-white flex items-center justify-center">
+                        <PlusCircle size={20} />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-xs">New contact</h4>
+                        <p className="text-[10px] opacity-60">Register a new permanent contact</p>
+                      </div>
+                    </button>
+
+                    {/* Option 4: Self Chat */}
+                    <button
+                      onClick={() => {
+                        if (onAddNewContact) {
+                          onAddNewContact("You (Message Yourself)", "+1234567890");
+                          setShowNewChatDrawer(false);
+                        }
+                      }}
+                      className="w-full px-5 py-3.5 flex items-center gap-4 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-left"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-emerald-500/20 text-[#00e676] flex items-center justify-center font-bold text-xs">
+                        YOU
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-xs text-emerald-500 dark:text-[#00e676]">Message yourself (You)</h4>
+                        <p className="text-[10px] opacity-60">Keep quick notes, audio recordings, or drafts</p>
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* 2. Grouped Alphabetical Contacts List */}
+                  <div className="py-2">
+                    {Object.keys(alphabeticalGroups).sort().map((letter) => {
+                      const groupContacts = alphabeticalGroups[letter].filter((c) =>
+                        c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        (c.phoneNumber && c.phoneNumber.includes(searchQuery))
+                      );
+                      if (groupContacts.length === 0) return null;
+
+                      return (
+                        <div key={letter} className="mb-4">
+                          <div className="px-5 py-1.5 text-xs font-black text-[#00a884] dark:text-[#00e676] tracking-wider uppercase bg-black/5 dark:bg-white/5 select-none">
+                            {letter}
+                          </div>
+                          <div className="divide-y divide-black/5 dark:divide-white/5">
+                            {groupContacts.map((c) => (
+                              <button
+                                      key={c.id}
+                                      onClick={() => {
+                                        onSelectContact(c.id);
+                                        setShowNewChatDrawer(false);
+                                      }}
+                                      className="w-full px-5 py-3 flex items-center gap-3 hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer text-left"
+                                    >
+                                      <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-800 flex items-center justify-center font-bold text-xs text-inherit overflow-hidden shrink-0">
+                                        {c.avatar ? (
+                                          <img src={c.avatar} alt={c.name} className="w-full h-full object-cover rounded-full" referrerPolicy="no-referrer" />
+                                        ) : (
+                                          c.name.slice(0, 1).toUpperCase()
+                                        )}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1.5">
+                                          <h4 className="font-bold text-xs truncate">{c.name}</h4>
+                                          {c.verified && (
+                                            <span className="bg-[#00e676] text-[#0b141a] text-[8px] px-1 rounded font-extrabold uppercase">
+                                              VERIFIED
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="text-[10px] opacity-60 truncate">{c.about || "Hey there! I am using WhatsApp."}</p>
+                                        {c.phoneNumber && (
+                                          <p className="text-[9px] opacity-40 font-mono mt-0.5">{c.phoneNumber}</p>
+                                        )}
+                                      </div>
+                                    </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* NEW CONTACT MODAL OVERLAY */}
+      {showNewContactModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className={`w-full max-w-sm rounded-2xl shadow-2xl p-6 border ${
+            isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+          }`}>
+            <h3 className="font-extrabold text-base mb-4 flex items-center gap-2 text-[#00a884]">
+              <PlusCircle size={20} /> Register New Contact
+            </h3>
+            
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="block text-[10px] font-black uppercase opacity-60 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  placeholder="John Doe"
+                  value={newContactName}
+                  onChange={(e) => setNewContactName(e.target.value)}
+                  className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-[#00a884] text-inherit"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black uppercase opacity-60 mb-1">Phone Number / JID</label>
+                <input
+                  type="tel"
+                  placeholder="e.g. +8801700000000"
+                  value={newContactPhone}
+                  onChange={(e) => setNewContactPhone(e.target.value)}
+                  className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-[#00a884] text-inherit font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                onClick={() => {
+                  setShowNewContactModal(false);
+                  setNewContactName("");
+                  setNewContactPhone("");
+                }}
+                className="px-4 py-2 border border-black/10 dark:border-white/10 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!newContactName.trim() || !newContactPhone.trim()) return;
+                  if (onAddNewContact) {
+                    onAddNewContact(newContactName.trim(), newContactPhone.trim());
+                    setNewContactName("");
+                    setNewContactPhone("");
+                    setShowNewContactModal(false);
+                    setShowNewChatDrawer(false);
+                  }
+                }}
+                disabled={!newContactName.trim() || !newContactPhone.trim()}
+                className="px-4 py-2 bg-[#00a884] hover:bg-[#008069] disabled:opacity-50 text-white rounded-lg font-bold cursor-pointer transition-colors"
+              >
+                Save Contact
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* NEW GROUP MODAL OVERLAY */}
+      {showNewGroupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className={`w-full max-w-sm rounded-2xl shadow-2xl p-6 border ${
+            isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+          }`}>
+            <h3 className="font-extrabold text-base mb-4 flex items-center gap-2 text-[#00a884]">
+              <Users size={20} /> Establish New Group
+            </h3>
+            
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="block text-[10px] font-black uppercase opacity-60 mb-1">Group Name / Subject</label>
+                <input
+                  type="text"
+                  placeholder="Family Group, Marketing Team etc."
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-[#00a884] text-inherit"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                onClick={() => {
+                  setShowNewGroupModal(false);
+                  setNewGroupName("");
+                }}
+                className="px-4 py-2 border border-black/10 dark:border-white/10 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!newGroupName.trim()) return;
+                  handleCreateNewGroupLocal();
+                }}
+                disabled={!newGroupName.trim()}
+                className="px-4 py-2 bg-[#00a884] hover:bg-[#008069] disabled:opacity-50 text-white rounded-lg font-bold cursor-pointer transition-colors"
+              >
+                Create Group
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. POSITION-AWARE CUSTOM CONTEXT MENU */}
+      <AnimatePresence>
+        {longPressContact && (() => {
+          const contact = contacts.find((c) => c.id === longPressContact.id);
+          if (!contact) return null;
+
+          // Compute menu position so it doesn't go off-screen
+          const x = longPressContact.x;
+          const y = longPressContact.y;
+          const menuWidth = 224;
+          const menuHeight = 380;
+          const posX = x + menuWidth > window.innerWidth ? window.innerWidth - menuWidth - 16 : x;
+          const posY = y + menuHeight > window.innerHeight ? window.innerHeight - menuHeight - 16 : y;
+
+          return (
+            <>
+              <div
+                className="fixed inset-0 z-40 cursor-default"
+                onClick={() => setLongPressContact(null)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setLongPressContact(null);
+                }}
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.12, ease: "easeOut" }}
+                style={{
+                  position: "fixed",
+                  top: `${posY}px`,
+                  left: `${posX}px`,
+                }}
+                className={`w-56 rounded-2xl shadow-[0_4px_32px_rgba(0,0,0,0.18)] border z-50 py-1.5 text-[13px] overflow-visible select-none ${
+                  isDark ? "bg-[#222e35] border-gray-700 text-[#e9edef]" : "bg-white border-gray-200 text-[#111b21]"
+                }`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Archive chat */}
+                {onArchiveContact && (
+                  <button
+                    onClick={() => {
+                      onArchiveContact(contact.id, !contact.archive);
+                      setLongPressContact(null);
+                    }}
+                    className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-3.5 cursor-pointer font-medium"
+                  >
+                    <Archive size={16} className={isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                    {contact.archive ? "Unarchive chat" : "Archive chat"}
+                  </button>
+                )}
+
+                {/* Mute notifications */}
+                <div
+                  className="relative"
+                  onMouseEnter={() => setHoveredMenuItem("mute")}
+                  onMouseLeave={() => setHoveredMenuItem(null)}
+                >
+                  <button
+                    onClick={() => {
+                      if (onUpdateContactSettings) {
+                        onUpdateContactSettings(contact.id, { isMuted: !contact.isMuted });
+                      }
+                      setLongPressContact(null);
+                    }}
+                    className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center justify-between cursor-pointer font-medium"
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <VolumeX size={16} className={isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                      <span>{contact.isMuted ? "Unmute notifications" : "Mute notifications"}</span>
+                    </div>
+                    {!contact.isMuted && <ChevronRight size={14} className="opacity-60" />}
+                  </button>
+
+                  {/* Submenu for mute duration */}
+                  {!contact.isMuted && hoveredMenuItem === "mute" && (
+                    <div
+                      className={`absolute top-0 ${
+                        posX + menuWidth + 150 > window.innerWidth ? "right-full mr-1" : "left-full ml-1"
+                      } w-36 rounded-xl shadow-xl border py-1 z-50 ${
+                        isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+                      }`}
+                    >
+                      {["8 Hours", "1 Week", "Always"].map((dur) => (
+                        <button
+                          key={dur}
+                          onClick={() => {
+                            if (onUpdateContactSettings) {
+                              onUpdateContactSettings(contact.id, { isMuted: true });
+                            }
+                            setLongPressContact(null);
+                          }}
+                          className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer text-xs font-semibold"
+                        >
+                          {dur}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Pin chat */}
+                <button
+                  onClick={() => {
+                    if (onUpdateContactSettings) {
+                      onUpdateContactSettings(contact.id, { isPinned: !contact.isPinned });
+                    }
+                    setLongPressContact(null);
+                  }}
+                  className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-3.5 cursor-pointer font-medium"
+                >
+                  <Pin size={16} className={contact.isPinned ? "text-[#00a884]" : isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                  {contact.isPinned ? "Unpin chat" : "Pin chat"}
+                </button>
+
+                {/* Mark as unread */}
+                <button
+                  onClick={() => {
+                    if (onUpdateContactSettings) {
+                      onUpdateContactSettings(contact.id, {
+                        unreadCount: contact.unreadCount > 0 ? 0 : 1
+                      });
+                    }
+                    setLongPressContact(null);
+                  }}
+                  className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-3.5 cursor-pointer font-medium"
+                >
+                  <CheckCheck size={16} className={isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                  {contact.unreadCount > 0 ? "Mark as read" : "Mark as unread"}
+                </button>
+
+                {/* Add to Favorites */}
+                <button
+                  onClick={() => {
+                    if (onUpdateContactSettings) {
+                      onUpdateContactSettings(contact.id, { isFavorite: !contact.isFavorite });
+                    }
+                    setLongPressContact(null);
+                  }}
+                  className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-3.5 cursor-pointer font-medium"
+                >
+                  <Heart size={16} className={contact.isFavorite ? "fill-red-500 text-red-500" : isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                  {contact.isFavorite ? "Remove from Favorites" : "Add to Favorites"}
+                </button>
+
+                {/* Add to list */}
+                <div
+                  className="relative"
+                  onMouseEnter={() => setHoveredMenuItem("lists")}
+                  onMouseLeave={() => setHoveredMenuItem(null)}
+                >
+                  <button
+                    onClick={() => {
+                      if (onUpdateContactSettings) {
+                        onUpdateContactSettings(contact.id, { isFavorite: !contact.isFavorite });
+                      }
+                      setLongPressContact(null);
+                    }}
+                    className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center justify-between cursor-pointer font-medium"
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <ListPlus size={16} className={isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                      <span>Add to list</span>
+                    </div>
+                    <ChevronRight size={14} className="opacity-60" />
+                  </button>
+
+                  {/* Submenu for list selection */}
+                  {hoveredMenuItem === "lists" && (
+                    <div
+                      className={`absolute top-0 ${
+                        posX + menuWidth + 150 > window.innerWidth ? "right-full mr-1" : "left-full ml-1"
+                      } w-36 rounded-xl shadow-xl border py-1 z-50 ${
+                        isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+                      }`}
+                    >
+                      {["Favorites", "Friends", "Family", "Work", "+ New list"].map((lst) => (
+                        <button
+                          key={lst}
+                          onClick={() => {
+                            if (lst === "Favorites" && onUpdateContactSettings) {
+                              onUpdateContactSettings(contact.id, { isFavorite: !contact.isFavorite });
+                            } else if (onUpdateContactSettings) {
+                              const currentCats = contact.categories || [];
+                              if (!currentCats.includes(lst)) {
+                                onUpdateContactSettings(contact.id, { categories: [...currentCats, lst] });
+                              }
+                            }
+                            setLongPressContact(null);
+                          }}
+                          className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer text-xs font-semibold"
+                        >
+                          {lst}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-t border-black/[0.06] dark:border-white/[0.06] my-1" />
+
+                {/* Block contact */}
+                <button
+                  onClick={() => {
+                    if (onUpdateContactSettings) {
+                      onUpdateContactSettings(contact.id, { isBlocked: !contact.isBlocked });
+                    }
+                    setLongPressContact(null);
+                  }}
+                  className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-3.5 cursor-pointer font-medium"
+                >
+                  <Ban size={16} className={contact.isBlocked ? "text-red-500" : isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                  {contact.isBlocked ? "Unblock" : "Block"}
+                </button>
+
+                {/* Clear chat */}
+                {onClearChat && (
+                  <button
+                    onClick={() => {
+                      if (confirm(`Clear chat history with ${contact.name}?`)) {
+                        onClearChat(contact.id);
+                      }
+                      setLongPressContact(null);
+                    }}
+                    className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-3.5 cursor-pointer font-medium"
+                  >
+                    <CircleMinus size={16} className={isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                    Clear chat
+                  </button>
+                )}
+
+                {/* Delete chat */}
+                {onDeleteChat && (
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete chat with ${contact.name}?`)) {
+                        onDeleteChat(contact.id);
+                      }
+                      setLongPressContact(null);
+                    }}
+                    className="w-full text-left px-4 py-2.5 hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-3.5 cursor-pointer font-medium"
+                  >
+                    <Trash2 size={16} className={isDark ? "text-[#aebac1]" : "text-gray-500"} />
+                    Delete chat
+                  </button>
+                )}
+              </motion.div>
+            </>
+          );
+        })()}
+      </AnimatePresence>
+
+      </div>
+    </div>
+  );
+};

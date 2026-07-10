@@ -1,0 +1,802 @@
+import React, { useState, useRef, useEffect } from "react";
+import { Paperclip, Smile, Send, Mic, X, Image, FileText, Square, Video, MapPin, User, BarChart2, MessageSquare, Play, Flame } from "lucide-react";
+import { EmojiPicker } from "./EmojiPicker";
+import { Contact, Message } from "../types";
+
+interface MessageInputProps {
+  onSendMessage: (
+    text: string,
+    type: "text" | "image" | "voice" | "file" | "video" | "sticker" | "contact" | "location" | "poll",
+    fileData?: { name: string; size: string; url: string },
+    contactCard?: { name: string; phone: string; avatar?: string; about?: string },
+    locationData?: { latitude: number; longitude: number; name: string; address?: string },
+    pollData?: { question: string; options: { id: string; text: string; votes: string[] }[] }
+  ) => void;
+  isDark: boolean;
+  contactId: string;
+  contacts: Contact[];
+  quotedMessage: Message | null;
+  onClearQuotedMessage: () => void;
+}
+
+export const MessageInput: React.FC<MessageInputProps> = ({
+  onSendMessage,
+  isDark,
+  contactId,
+  contacts,
+  quotedMessage,
+  onClearQuotedMessage,
+}) => {
+  const [text, setText] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showAttachments, setShowAttachments] = useState(false);
+  
+  // Custom dialog toggles
+  const [showStickers, setShowStickers] = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [showContactModal, setShowContactModal] = useState(false);
+  const [showPollModal, setShowPollModal] = useState(false);
+
+  // Poll Form State
+  const [pollQuestion, setPollQuestion] = useState("");
+  const [pollOptions, setPollOptions] = useState(["", ""]);
+
+  // Recording voice note state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [micError, setMicError] = useState<string | null>(null);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Clear micError after 4 seconds
+  useEffect(() => {
+    if (micError) {
+      const t = setTimeout(() => setMicError(null), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [micError]);
+
+  // Close attachments menu when contact changes
+  useEffect(() => {
+    setShowAttachments(false);
+    setShowEmojiPicker(false);
+    setShowStickers(false);
+    setShowLocationModal(false);
+    setShowContactModal(false);
+    setShowPollModal(false);
+  }, [contactId]);
+
+  // Audio recording timer
+  useEffect(() => {
+    if (isRecording) {
+      timerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setRecordingSeconds(0);
+    }
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [isRecording]);
+
+  const handleSend = () => {
+    if (text.trim() === "") return;
+    onSendMessage(text.trim(), "text");
+    setText("");
+    setShowEmojiPicker(false);
+    setShowStickers(false);
+    onClearQuotedMessage();
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      handleSend();
+    }
+  };
+
+  // 1. Microphone Voice Note Recording
+  const startRecording = async () => {
+    try {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        throw new Error("Microphone API is not supported in this browser context or iframe.");
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let mimeType = "audio/ogg; codecs=opus";
+      if (typeof MediaRecorder.isTypeSupported === "function") {
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = "audio/webm; codecs=opus";
+        }
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = "audio/webm";
+        }
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = "audio/mp4";
+        }
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = "";
+        }
+      } else {
+        mimeType = "";
+      }
+
+      const options = mimeType ? { mimeType } : undefined;
+      const mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+ 
+       mediaRecorder.ondataavailable = (event) => {
+         if (event.data.size > 0) {
+           audioChunksRef.current.push(event.data);
+         }
+       };
+ 
+       mediaRecorder.onstop = () => {
+         const actualMimeType = mediaRecorder.mimeType || mimeType || "audio/ogg";
+         const audioBlob = new Blob(audioChunksRef.current, { type: actualMimeType });
+         const audioUrl = URL.createObjectURL(audioBlob);
+         
+         const extension = actualMimeType.includes("ogg") ? "ogg" : actualMimeType.includes("mp4") ? "mp4" : "webm";
+ 
+         onSendMessage(
+           "🎤 Voice Note",
+           "voice",
+           {
+             name: `voice_note_${Date.now()}.${extension}`,
+             size: `${(audioBlob.size / 1024).toFixed(1)} KB`,
+             url: audioUrl,
+           }
+         );
+ 
+         stream.getTracks().forEach((track) => track.stop());
+       };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setShowAttachments(false);
+      setShowEmojiPicker(false);
+      setShowStickers(false);
+    } catch (err: any) {
+      console.error("Microphone permission or hardware access denied:", err);
+      if (window.self !== window.top) {
+        setMicError(
+          "ব্রাউজার সিকিউরিটির কারণে প্রিভিউ ফ্রেমের (iframe) ভেতর থেকে সরাসরি মাইক্রোফোন ব্যবহার করা যায় না। ভয়েস রেকর্ড করতে অনুগ্রহ করে ওপরের ডানদিকের 'Open in a new tab' আইকনে ক্লিক করে নতুন ট্যাবে অ্যাপটি ওপেন করুন!"
+        );
+      } else {
+        setMicError(
+          err.message || "Microphone permission is required to record voice notes."
+        );
+      }
+    }
+  };
+
+  const stopRecordingAndSend = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.onstop = null;
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      setIsRecording(false);
+    }
+  };
+
+  const formatTimer = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  // 2. Photo Attachment Upload
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (readerEvent: any) => {
+        const base64 = readerEvent.target.result;
+        onSendMessage(
+          file.name,
+          "image",
+          {
+            name: file.name,
+            size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+            url: base64,
+          }
+        );
+        setShowAttachments(false);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // 3. Document Attachment Upload
+  const handleDocumentUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (readerEvent: any) => {
+        const base64 = readerEvent.target.result;
+        onSendMessage(
+          file.name,
+          "file",
+          {
+            name: file.name,
+            size: `${(file.size / 1024).toFixed(1)} KB`,
+            url: base64,
+          }
+        );
+        setShowAttachments(false);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // 4. Video Attachment Upload
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (readerEvent: any) => {
+        const base64 = readerEvent.target.result;
+        onSendMessage(
+          file.name,
+          "video",
+          {
+            name: file.name,
+            size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+            url: base64,
+          }
+        );
+        setShowAttachments(false);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // 5. Stickers Dispatch
+  const stickerPacks = [
+    { name: "Pepe Cheer", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM3ZpcHRjNGUzbDk5OHloNDNmeWh0Nm9kYWtyeDZudnVrb2Z2YWtwZiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/Lk023zZqHJ3I0ch6XB/giphy.gif" },
+    { name: "Dancing Cat", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcm5vM281b3Z2N3J6OGoxeTZ3dTh6dzJ4MWVpaTY3dzJrY244cGQ1diZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/R6gVNv59cNdUnqKWgS/giphy.gif" },
+    { name: "Doggo Love", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM3Y4NThxNDBrMHcyaDJpdDJ5bm9zZHlyamRtdzN1eGtxZWhid2swbyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/l0CLXz7bV84mY89XW/giphy.gif" },
+    { name: "Excited Minion", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM2FsbThidmU0dm12YW51Y201ODFlYzZubGg3NDNpZmdjM3JmZGRzNiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/13CoXDiaCcC9qc/giphy.gif" },
+    { name: "Cute Sparkle", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExYzh0czYyeHF6ajVibG5ocTdrMGZpOG83Zm8xazZodmdndzlsbTNtNyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/l0Exhc7Exl9g6pQEE/giphy.gif" },
+    { name: "Heart Flutter", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExNmYxeXVrbDBuMXoyMzg3YXB5b2l4NW9pOGo3dWw0ZmtpbnZ4ZGFveSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/bL3y94AM59YAlX935S/giphy.gif" }
+  ];
+
+  const sendSticker = (stickerUrl: string, name: string) => {
+    onSendMessage(name, "sticker", { name, size: "sticker", url: stickerUrl });
+    setShowStickers(false);
+  };
+
+  // 6. Location Sharing Dispatch
+  const preconfiguredLocations = [
+    { name: "Ramna Park Lakeside 🌳", address: "Ramna, Dhaka 1000", lat: 23.7374, lng: 90.4019 },
+    { name: "Banani Lake View Walkway 🌊", address: "Road 11, Banani, Dhaka 1213", lat: 23.7940, lng: 90.4043 },
+    { name: "Silicon Valley Tech Center 💻", address: "Palo Alto, California, USA", lat: 37.4419, lng: -122.1430 },
+    { name: "London Eye Landmark 🎡", address: "Riverside East, London, UK", lat: 51.5033, lng: -0.1195 },
+    { name: "Sydney Harbour Bridge 🌉", address: "Sydney, NSW, Australia", lat: -33.8523, lng: 151.2108 }
+  ];
+
+  const sendLocation = (loc: typeof preconfiguredLocations[0]) => {
+    onSendMessage(
+      `📍 Shared location: ${loc.name}`,
+      "location",
+      undefined,
+      undefined,
+      { latitude: loc.lat, longitude: loc.lng, name: loc.name, address: loc.address }
+    );
+    setShowLocationModal(false);
+  };
+
+  // 7. Contact Card Sharing Dispatch
+  const sendContactCard = (targetContact: Contact) => {
+    onSendMessage(
+      `👤 Shared contact details: ${targetContact.name}`,
+      "contact",
+      undefined,
+      {
+        name: targetContact.name,
+        phone: targetContact.phoneNumber || "+880 151-555-5555",
+        avatar: targetContact.avatar,
+        about: targetContact.about
+      }
+    );
+    setShowContactModal(false);
+  };
+
+  // 8. Poll creation triggers
+  const handleAddPollOption = () => {
+    if (pollOptions.length < 6) {
+      setPollOptions([...pollOptions, ""]);
+    }
+  };
+
+  const handleRemovePollOption = (idx: number) => {
+    if (pollOptions.length > 2) {
+      setPollOptions(pollOptions.filter((_, i) => i !== idx));
+    }
+  };
+
+  const handlePollOptionChange = (idx: number, val: string) => {
+    const updated = [...pollOptions];
+    updated[idx] = val;
+    setPollOptions(updated);
+  };
+
+  const createPollAndSend = () => {
+    if (!pollQuestion.trim()) {
+      alert("Please enter a question.");
+      return;
+    }
+    const filteredOptions = pollOptions.filter(o => o.trim() !== "");
+    if (filteredOptions.length < 2) {
+      alert("Please provide at least 2 non-empty options.");
+      return;
+    }
+
+    const payloadOptions = filteredOptions.map((text, index) => ({
+      id: `opt_${Date.now()}_${index}`,
+      text,
+      votes: []
+    }));
+
+    onSendMessage(
+      `📊 Poll: ${pollQuestion}`,
+      "poll",
+      undefined,
+      undefined,
+      undefined,
+      { question: pollQuestion, options: payloadOptions }
+    );
+
+    // Reset Form
+    setPollQuestion("");
+    setPollOptions(["", ""]);
+    setShowPollModal(false);
+  };
+
+  return (
+    <div className="flex flex-col shrink-0 select-none relative">
+      {/* Microphone Permission Error Toast */}
+      {micError && (
+        <div
+          className="px-6 py-2.5 bg-red-50/95 dark:bg-red-950/90 border-l-4 border-red-500 text-red-700 dark:text-red-300 text-xs flex items-center justify-between shadow-md"
+          style={{ animation: "slideUp 0.12s ease-out" }}
+        >
+          <div className="flex-1 font-medium">
+            ⚠️ Microphone Error: {micError}
+          </div>
+          <button
+            onClick={() => setMicError(null)}
+            className="p-1 rounded-full hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer text-red-600 dark:text-red-400"
+            title="Dismiss Error"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Quoted Reply Header bar */}
+      {quotedMessage && (
+        <div
+          className={`px-6 py-2 border-l-4 border-emerald-500 flex items-center justify-between ${
+            isDark ? "bg-[#1f2c34] text-white" : "bg-[#f0f2f5] text-gray-800"
+          }`}
+          style={{ animation: "slideUp 0.12s ease-out" }}
+        >
+          <div className="min-w-0 flex-1">
+            <span className="text-[11px] font-semibold text-emerald-500 block leading-none">
+              Replying to {quotedMessage.sender === "me" ? "yourself" : "contact"}
+            </span>
+            <p className="text-xs truncate opacity-70 mt-0.5 max-w-xl">
+              {quotedMessage.text}
+            </p>
+          </div>
+          <button
+            onClick={onClearQuotedMessage}
+            className="p-1 rounded-full hover:bg-black/10 dark:hover:bg-white/10 shrink-0 cursor-pointer"
+            title="Cancel Reply"
+            id="cancel-reply-btn"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* Main message tool container */}
+      <div
+        className={`relative px-2.5 md:px-4 py-3 flex items-center gap-1.5 md:gap-3 min-w-0 ${
+          isDark ? "bg-[#202c33]" : "bg-[#f0f2f5]"
+        }`}
+      >
+        {isRecording ? (
+          <div className="flex-1 flex items-center justify-between bg-black/10 dark:bg-white/5 rounded-lg px-4 py-2 text-sm transition-all animate-pulse">
+            <div className="flex items-center gap-3 text-red-500 font-semibold">
+              <span className="w-2.5 h-2.5 bg-red-600 rounded-full animate-ping" />
+              <span>Recording Voice {formatTimer(recordingSeconds)}</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={cancelRecording}
+                className="text-gray-500 hover:text-red-500 font-medium cursor-pointer"
+                id="cancel-voice-recording-btn"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={stopRecordingAndSend}
+                className="flex items-center justify-center bg-emerald-500 text-white p-2 rounded-full hover:bg-emerald-600 shadow cursor-pointer"
+                title="Stop and Send"
+                id="send-voice-recording-btn"
+              >
+                <Square size={14} fill="currentColor" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Action buttons */}
+            <div className="flex items-center gap-1.5">
+              {/* Emoji popover */}
+              <button
+                onClick={() => {
+                  setShowEmojiPicker(!showEmojiPicker);
+                  setShowAttachments(false);
+                  setShowStickers(false);
+                }}
+                className={`p-2 rounded-full transition-colors cursor-pointer ${
+                  showEmojiPicker ? "text-emerald-500 bg-black/5 dark:bg-white/5" : "text-gray-500 hover:text-gray-700 dark:hover:text-white"
+                }`}
+                title="Emoji Picker"
+                id="emoji-picker-btn"
+              >
+                <Smile size={22} />
+              </button>
+
+              {/* Attachments drawer */}
+              <div className="relative">
+                <button
+                  onClick={() => {
+                    setShowAttachments(!showAttachments);
+                    setShowEmojiPicker(false);
+                    setShowStickers(false);
+                  }}
+                  className={`p-2 rounded-full transition-colors cursor-pointer ${
+                    showAttachments
+                      ? "text-emerald-500 bg-black/5 dark:bg-white/5"
+                      : "text-gray-500 hover:text-gray-700 dark:hover:text-white"
+                  }`}
+                  title="Attach Files"
+                  id="attach-files-btn"
+                >
+                  <Paperclip size={22} className={showAttachments ? "rotate-45" : ""} />
+                </button>
+
+                {/* Submenu Dropdown */}
+                {showAttachments && (
+                  <div
+                    className={`absolute bottom-14 left-0 z-40 rounded-xl shadow-2xl border flex flex-col p-2 space-y-1 w-44 ${
+                      isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-100 text-gray-800"
+                    }`}
+                    style={{ animation: "slideUp 0.1s ease-out" }}
+                  >
+                    <label className="flex items-center gap-3 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg cursor-pointer text-xs font-semibold">
+                      <Image size={16} className="text-blue-500" />
+                      <span>📷 Photo</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handlePhotoUpload}
+                        className="hidden"
+                      />
+                    </label>
+
+                    <label className="flex items-center gap-3 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg cursor-pointer text-xs font-semibold">
+                      <Video size={16} className="text-emerald-500" />
+                      <span>🎥 Video</span>
+                      <input
+                        type="file"
+                        accept="video/*"
+                        onChange={handleVideoUpload}
+                        className="hidden"
+                      />
+                    </label>
+
+                    <label className="flex items-center gap-3 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg cursor-pointer text-xs font-semibold">
+                      <FileText size={16} className="text-purple-500" />
+                      <span>📄 Document</span>
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx,.txt"
+                        onChange={handleDocumentUpload}
+                        className="hidden"
+                      />
+                    </label>
+
+                    <button
+                      onClick={() => {
+                        setShowStickers(true);
+                        setShowAttachments(false);
+                      }}
+                      className="flex items-center gap-3 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg text-xs font-semibold text-left w-full cursor-pointer"
+                      id="attach-stickers-btn"
+                    >
+                      <Smile size={16} className="text-orange-500 animate-pulse" />
+                      <span>✨ Sticker Pack</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setShowLocationModal(true);
+                        setShowAttachments(false);
+                      }}
+                      className="flex items-center gap-3 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg text-xs font-semibold text-left w-full cursor-pointer"
+                      id="attach-location-btn"
+                    >
+                      <MapPin size={16} className="text-red-500" />
+                      <span>📍 Send Location</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setShowContactModal(true);
+                        setShowAttachments(false);
+                      }}
+                      className="flex items-center gap-3 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg text-xs font-semibold text-left w-full cursor-pointer"
+                      id="attach-contact-btn"
+                    >
+                      <User size={16} className="text-sky-500" />
+                      <span>👤 Share Contact</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setShowPollModal(true);
+                        setShowAttachments(false);
+                      }}
+                      className="flex items-center gap-3 p-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg text-xs font-semibold text-left w-full cursor-pointer"
+                      id="attach-poll-btn"
+                    >
+                      <BarChart2 size={16} className="text-yellow-500" />
+                      <span>📊 Create Poll</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Emojis Window Placement */}
+            {showEmojiPicker && (
+              <EmojiPicker
+                onSelect={(emoji) => setText((prev) => prev + emoji)}
+                onClose={() => setShowEmojiPicker(false)}
+                isDark={isDark}
+              />
+            )}
+
+            {/* Stickers drawer popup */}
+            {showStickers && (
+              <div
+                className={`absolute bottom-16 left-4 z-50 w-[320px] md:w-[360px] rounded-lg shadow-2xl border flex flex-col p-3 ${
+                  isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+                }`}
+                style={{ animation: "slideUp 0.15s ease-out" }}
+              >
+                <div className="flex justify-between items-center border-b pb-2 mb-3 border-black/10 dark:border-white/10">
+                  <span className="font-semibold text-sm flex items-center gap-1">✨ Official Sticker Packs</span>
+                  <button onClick={() => setShowStickers(false)} className="text-[#00a884] text-xs font-bold hover:underline cursor-pointer">Close</button>
+                </div>
+                <div className="grid grid-cols-3 gap-2 justify-items-center max-h-56 overflow-y-auto overflow-x-hidden p-1">
+                  {stickerPacks.map((sticker, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => sendSticker(sticker.url, sticker.name)}
+                      className="p-1 hover:bg-black/5 dark:hover:bg-white/10 rounded-lg transition-all hover:scale-105 flex flex-col items-center gap-1 text-[10px] cursor-pointer"
+                      id={`sticker-item-${idx}`}
+                    >
+                      <img src={sticker.url} alt={sticker.name} className="w-14 h-14 object-contain rounded" referrerPolicy="no-referrer" />
+                      <span className="opacity-70 truncate max-w-[80px]">{sticker.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Location Sharing Dialog Modal */}
+            {showLocationModal && (
+              <div
+                className={`absolute bottom-16 left-4 z-50 w-[320px] md:w-[360px] rounded-lg shadow-2xl border flex flex-col p-3 ${
+                  isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+                }`}
+                style={{ animation: "slideUp 0.15s ease-out" }}
+              >
+                <div className="flex justify-between items-center border-b pb-2 mb-3 border-black/10 dark:border-white/10">
+                  <span className="font-semibold text-sm flex items-center gap-1.5">📍 Pinpoint Live Location</span>
+                  <button onClick={() => setShowLocationModal(false)} className="text-[#00a884] text-xs font-bold hover:underline cursor-pointer">Close</button>
+                </div>
+                <p className="text-[10px] opacity-60 mb-3 leading-tight">Send high precision mock locations to simulate coordinates sharing across devices.</p>
+                <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto overflow-x-hidden">
+                  {preconfiguredLocations.map((loc, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => sendLocation(loc)}
+                      className="p-2 text-left hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors flex items-center gap-2.5 cursor-pointer text-xs"
+                      id={`location-choice-${idx}`}
+                    >
+                      <div className="w-8 h-8 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center shrink-0">
+                        <MapPin size={14} />
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="font-bold truncate">{loc.name}</h4>
+                        <p className="opacity-60 truncate text-[10px]">{loc.address}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Share Contact Dialog Modal */}
+            {showContactModal && (
+              <div
+                className={`absolute bottom-16 left-4 z-50 w-[320px] md:w-[360px] rounded-lg shadow-2xl border flex flex-col p-3 ${
+                  isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+                }`}
+                style={{ animation: "slideUp 0.15s ease-out" }}
+              >
+                <div className="flex justify-between items-center border-b pb-2 mb-3 border-black/10 dark:border-white/10">
+                  <span className="font-semibold text-sm flex items-center gap-1.5">👤 Select Contact vCard</span>
+                  <button onClick={() => setShowContactModal(false)} className="text-[#00a884] text-xs font-bold hover:underline cursor-pointer">Close</button>
+                </div>
+                <div className="flex flex-col gap-1 max-h-56 overflow-y-auto overflow-x-hidden">
+                  {contacts.filter(c => c.id !== contactId).map((c, idx) => (
+                    <button
+                      key={c.id}
+                      onClick={() => sendContactCard(c)}
+                      className="p-2 text-left hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors flex items-center gap-3 cursor-pointer text-xs"
+                      id={`share-contact-choice-${idx}`}
+                    >
+                      <div className="w-8 h-8 rounded-full overflow-hidden flex items-center justify-center bg-gray-200 border border-black/10 shrink-0">
+                        {c.avatar && c.avatar.startsWith("http") ? (
+                          <img src={c.avatar} alt={c.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          <span className="text-gray-500 font-bold text-xs">{c.name.slice(0, 2).toUpperCase()}</span>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="font-bold truncate">{c.name}</h4>
+                        <p className="opacity-60 truncate text-[10px]">{c.phoneNumber || "No active phone number"}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Poll Creation Dialog Modal */}
+            {showPollModal && (
+              <div
+                className={`absolute bottom-16 left-4 z-50 w-[320px] md:w-[380px] rounded-xl shadow-2xl border flex flex-col p-4 ${
+                  isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+                }`}
+                style={{ animation: "slideUp 0.15s ease-out" }}
+              >
+                <div className="flex justify-between items-center border-b pb-2 mb-3 border-black/10 dark:border-white/10">
+                  <span className="font-bold text-sm flex items-center gap-1.5">📊 Create a WhatsApp Poll</span>
+                  <button onClick={() => setShowPollModal(false)} className="text-[#00a884] text-xs font-bold hover:underline cursor-pointer">Close</button>
+                </div>
+                <div className="space-y-3 max-h-[320px] overflow-y-auto overflow-x-hidden pr-1">
+                  {/* Question */}
+                  <div>
+                    <label className="text-[10px] font-bold uppercase opacity-65 mb-1 block">Question</label>
+                    <input
+                      type="text"
+                      placeholder="Ask a question..."
+                      value={pollQuestion}
+                      onChange={(e) => setPollQuestion(e.target.value)}
+                      className={`w-full p-2 rounded border text-xs outline-none focus:ring-1 focus:ring-[#00a884] ${
+                        isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                      }`}
+                    />
+                  </div>
+
+                  {/* Options */}
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold uppercase opacity-65 flex justify-between items-center">
+                      <span>Options ({pollOptions.length})</span>
+                      {pollOptions.length < 5 && (
+                        <button
+                          onClick={handleAddPollOption}
+                          className="text-[#00a884] text-[10px] font-bold lowercase hover:underline cursor-pointer"
+                        >
+                          + Add option
+                        </button>
+                      )}
+                    </label>
+                    {pollOptions.map((opt, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder={`Option ${idx + 1}`}
+                          value={opt}
+                          onChange={(e) => handlePollOptionChange(idx, e.target.value)}
+                          className={`flex-1 p-2 rounded border text-xs outline-none focus:ring-1 focus:ring-[#00a884] ${
+                            isDark ? "bg-[#2a3942] border-gray-600 text-white" : "bg-gray-50 border-gray-200 text-gray-800"
+                          }`}
+                        />
+                        {pollOptions.length > 2 && (
+                          <button
+                            onClick={() => handleRemovePollOption(idx)}
+                            className="text-red-500 hover:text-red-600 p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer"
+                            title="Remove Option"
+                            id={`remove-poll-opt-${idx}`}
+                          >
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  onClick={createPollAndSend}
+                  className="w-full mt-4 py-2 bg-[#00a884] hover:bg-[#008069] text-white rounded text-xs font-bold transition-all cursor-pointer shadow"
+                  id="submit-poll-btn"
+                >
+                  Send Poll 📊
+                </button>
+              </div>
+            )}
+
+            {/* Chat Field Input */}
+            <div className="flex-1 min-w-0 relative">
+              <input
+                type="text"
+                placeholder="Type a message..."
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={handleKeyPress}
+                className={`w-full py-2.5 px-4 rounded-lg text-sm border-none outline-none focus:ring-1 focus:ring-[#00a884] min-w-0 ${
+                  isDark ? "bg-[#2a3942] text-white" : "bg-white text-gray-800"
+                }`}
+              />
+            </div>
+
+            {/* Action Send / Mic */}
+            <div>
+              {text.trim() === "" ? (
+                <button
+                  onClick={startRecording}
+                  className="p-2.5 bg-[#00a884] hover:bg-[#008069] text-white rounded-full shadow-md transition-all active:scale-95 cursor-pointer"
+                  title="Record voice note"
+                  id="voice-recording-trigger"
+                >
+                  <Mic size={18} />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  className="p-2.5 bg-[#00a884] hover:bg-[#008069] text-white rounded-full shadow-md transition-all active:scale-95 cursor-pointer"
+                  title="Send message"
+                  id="send-message-trigger"
+                >
+                  <Send size={18} fill="currentColor" className="ml-[2px]" />
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};

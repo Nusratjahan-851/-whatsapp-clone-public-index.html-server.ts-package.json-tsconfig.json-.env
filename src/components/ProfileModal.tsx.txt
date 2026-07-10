@@ -1,0 +1,230 @@
+import React, { useState } from "react";
+import { X, Camera, Check, Pencil } from "lucide-react";
+import { UserProfile } from "../types";
+
+interface ProfileModalProps {
+  profile: UserProfile;
+  onUpdate: (updated: UserProfile) => void;
+  onClose: () => void;
+  isDark: boolean;
+}
+
+export const ProfileModal: React.FC<ProfileModalProps> = ({ profile, onUpdate, onClose, isDark }) => {
+  const [name, setName] = useState(profile.name);
+  const [about, setAbout] = useState(profile.about);
+  const [phoneNumber, setPhoneNumber] = useState(profile.phoneNumber);
+  const [avatar, setAvatar] = useState(profile.avatar);
+
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [isEditingAbout, setIsEditingAbout] = useState(false);
+  const [isEditingPhone, setIsEditingPhone] = useState(false);
+
+  const handleSave = () => {
+    onUpdate({ name, about, phoneNumber, avatar });
+  };
+
+  const triggerAvatarUpload = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = (e: any) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (readerEvent: any) => {
+          const base64 = readerEvent.target.result;
+          setAvatar(base64);
+          onUpdate({ name, about, phoneNumber, avatar: base64 });
+        };
+        reader.readAsDataURL(file);
+      }
+    };
+    input.click();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
+      <div
+        className={`w-full max-w-md rounded-lg shadow-2xl overflow-hidden border transition-all ${
+          isDark ? "bg-[#222e35] border-gray-700 text-white" : "bg-white border-gray-200 text-gray-800"
+        }`}
+        style={{ animation: "scaleUp 0.2s ease-out" }}
+      >
+        {/* Header */}
+        <div className={`p-4 border-b flex justify-between items-center ${isDark ? "border-gray-700 bg-[#2a3942]" : "border-gray-100 bg-[#008069] text-white"}`}>
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-lg">My Profile</span>
+          </div>
+          <button
+            onClick={onClose}
+            className={`p-1.5 rounded-full transition-colors ${isDark ? "hover:bg-white/10" : "hover:bg-black/10"}`}
+            id="close-profile-modal"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 space-y-6 overflow-y-auto overflow-x-hidden max-h-[75vh]">
+          {/* Avatar Upload */}
+          <div className="flex flex-col items-center gap-2">
+            <div className="relative group cursor-pointer" onClick={triggerAvatarUpload}>
+              <div className="w-28 h-28 rounded-full overflow-hidden border-2 border-[#00a884] flex items-center justify-center bg-gray-100 dark:bg-gray-800">
+                {avatar ? (
+                  <img src={avatar || null} alt="My Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                ) : (
+                  <span className="text-3xl font-bold text-[#00a884]">{name.charAt(0)}</span>
+                )}
+              </div>
+              <div className="absolute inset-0 bg-black/40 rounded-full flex flex-col items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity">
+                <Camera size={20} />
+                <span className="text-[10px] mt-1 uppercase font-semibold">Change</span>
+              </div>
+            </div>
+            <p className="text-[11px] opacity-60">Click to upload custom picture</p>
+          </div>
+
+          {/* Display Name Field */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-[#00a884] uppercase tracking-wider">Your Name</label>
+            <div className={`flex items-center justify-between pb-1.5 border-b ${isDark ? "border-gray-700" : "border-gray-200"}`}>
+              {isEditingName ? (
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onBlur={() => {
+                    setIsEditingName(false);
+                    handleSave();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setIsEditingName(false);
+                      handleSave();
+                    }
+                  }}
+                  autoFocus
+                  className="bg-transparent border-none outline-none flex-1 font-medium text-base py-0 text-inherit"
+                />
+              ) : (
+                <span className="font-medium text-base">{name}</span>
+              )}
+              <button
+                onClick={() => {
+                  if (isEditingName) {
+                    setIsEditingName(false);
+                    handleSave();
+                  } else {
+                    setIsEditingName(true);
+                  }
+                }}
+                className="text-[#00a884] p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded"
+                id="edit-name-btn"
+              >
+                {isEditingName ? <Check size={16} /> : <Pencil size={16} />}
+              </button>
+            </div>
+            <p className="text-[11px] opacity-50 leading-relaxed">
+              This is not your username. This name will be visible to your WhatsApp contacts.
+            </p>
+          </div>
+
+          {/* About Field */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-[#00a884] uppercase tracking-wider">About</label>
+            <div className={`flex items-center justify-between pb-1.5 border-b ${isDark ? "border-gray-700" : "border-gray-200"}`}>
+              {isEditingAbout ? (
+                <input
+                  type="text"
+                  value={about}
+                  onChange={(e) => setAbout(e.target.value)}
+                  onBlur={() => {
+                    setIsEditingAbout(false);
+                    handleSave();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setIsEditingAbout(false);
+                      handleSave();
+                    }
+                  }}
+                  autoFocus
+                  className="bg-transparent border-none outline-none flex-1 text-sm py-0 text-inherit"
+                />
+              ) : (
+                <span className="text-sm">{about}</span>
+              )}
+              <button
+                onClick={() => {
+                  if (isEditingAbout) {
+                    setIsEditingAbout(false);
+                    handleSave();
+                  } else {
+                    setIsEditingAbout(true);
+                  }
+                }}
+                className="text-[#00a884] p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded"
+                id="edit-about-btn"
+              >
+                {isEditingAbout ? <Check size={16} /> : <Pencil size={16} />}
+              </button>
+            </div>
+          </div>
+
+          {/* Phone Field */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold text-[#00a884] uppercase tracking-wider">Phone Number</label>
+            <div className={`flex items-center justify-between pb-1.5 border-b ${isDark ? "border-gray-700" : "border-gray-200"}`}>
+              {isEditingPhone ? (
+                <input
+                  type="text"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  onBlur={() => {
+                    setIsEditingPhone(false);
+                    handleSave();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setIsEditingPhone(false);
+                      handleSave();
+                    }
+                  }}
+                  autoFocus
+                  className="bg-transparent border-none outline-none flex-1 text-sm py-0 text-inherit"
+                />
+              ) : (
+                <span className="text-sm">{phoneNumber}</span>
+              )}
+              <button
+                onClick={() => {
+                  if (isEditingPhone) {
+                    setIsEditingPhone(false);
+                    handleSave();
+                  } else {
+                    setIsEditingPhone(true);
+                  }
+                }}
+                className="text-[#00a884] p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded"
+                id="edit-phone-btn"
+              >
+                {isEditingPhone ? <Check size={16} /> : <Pencil size={16} />}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className={`p-4 border-t flex justify-end gap-3 ${isDark ? "border-gray-700 bg-[#2a3942]" : "border-gray-100 bg-gray-50"}`}>
+          <button
+            onClick={onClose}
+            className={`px-4 py-2 text-sm font-semibold rounded-md shadow-sm transition-all bg-[#00a884] hover:bg-[#008069] text-white`}
+            id="save-profile-btn"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};

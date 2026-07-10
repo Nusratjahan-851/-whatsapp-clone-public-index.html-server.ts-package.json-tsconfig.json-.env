@@ -1,0 +1,217 @@
+import { Contact, Chat } from "../types";
+
+export const initialContacts: Contact[] = [
+  {
+    id: "contact-1",
+    name: "অভিমানী মন",
+    avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80",
+    isGroup: false,
+    unreadCount: 1,
+    about: "Busy at the moment.",
+    status: "online",
+    phoneNumber: "+880 1812-345678",
+  },
+  {
+    id: "contact-2",
+    name: "SHANTO",
+    avatar: "letter-S",
+    isGroup: false,
+    unreadCount: 1,
+    about: "Hey there! I am using WhatsApp.",
+    status: "offline",
+    phoneNumber: "+880 1912-345678",
+  },
+  {
+    id: "contact-3",
+    name: "Faruk Vai",
+    avatar: "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=150&auto=format&fit=crop&q=80",
+    isGroup: false,
+    unreadCount: 0,
+    about: "Photography is life 📷",
+    status: "online",
+    phoneNumber: "+880 1712-345678",
+  },
+  {
+    id: "contact-4",
+    name: "RS JIBON",
+    avatar: "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=150&auto=format&fit=crop&q=80",
+    isGroup: false,
+    unreadCount: 0,
+    about: "Available",
+    status: "offline",
+    phoneNumber: "+880 1612-345678",
+  },
+  {
+    id: "contact-5",
+    name: "+880 1744-496503",
+    avatar: "https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=150&auto=format&fit=crop&q=80",
+    isGroup: false,
+    unreadCount: 0,
+    about: "Urgent calls only",
+    status: "offline",
+    phoneNumber: "+880 1744-496503",
+  },
+  {
+    id: "contact-6",
+    name: "Nil",
+    avatar: "black-circle",
+    isGroup: false,
+    unreadCount: 0,
+    about: "Silence is gold",
+    status: "offline",
+    phoneNumber: "+880 1312-345678",
+  },
+  {
+    id: "contact-7",
+    name: "Ma🥰🥰",
+    avatar: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=80",
+    isGroup: false,
+    unreadCount: 0,
+    about: "My family is my world ❤️",
+    status: "online",
+    phoneNumber: "+880 1512-345678",
+  },
+  {
+    id: "contact-8",
+    name: "Sabbir Choto Vai3",
+    avatar: "https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=150&auto=format&fit=crop&q=80",
+    isGroup: false,
+    unreadCount: 0,
+    about: "Coding...",
+    status: "offline",
+    phoneNumber: "+880 1412-345678",
+  },
+];
+
+export const initialChats: Chat[] = [
+  {
+    contactId: "contact-1",
+    messages: [
+      {
+        id: "m1_1",
+        sender: "me",
+        text: "আসসালামু আলাইকুম, ভাই কেমন আছেন?",
+        timestamp: "5:25 PM",
+        type: "text",
+        status: "read",
+      },
+      {
+        id: "m1_2",
+        sender: "them",
+        text: "কেমন আছেন",
+        timestamp: "5:27 PM",
+        type: "text",
+        status: "read",
+      },
+    ],
+  },
+  {
+    contactId: "contact-2",
+    messages: [
+      {
+        id: "m2_1",
+        sender: "me",
+        text: "দোস্ত তোদের খবর কি?",
+        timestamp: "4:45 PM",
+        type: "text",
+        status: "read",
+      },
+      {
+        id: "m2_2",
+        sender: "them",
+        text: "ওরা কয় ওরাই টপ ওরাই সব আমরা কি ফাও না...",
+        timestamp: "4:48 PM",
+        type: "text",
+        status: "read",
+      },
+    ],
+  },
+  {
+    contactId: "contact-3",
+    messages: [
+      {
+        id: "m3_1",
+        sender: "me",
+        text: "https://play.google.com/store/apps/details?id=com.whatsapp",
+        timestamp: "4:40 PM",
+        type: "text",
+        status: "read",
+      },
+    ],
+  },
+  {
+    contactId: "contact-4",
+    messages: [
+      {
+        id: "m4_1",
+        sender: "me",
+        text: "আজকে কি দেখা করবি?",
+        timestamp: "2:50 PM",
+        type: "text",
+        status: "read",
+      },
+      {
+        id: "m4_2",
+        sender: "them",
+        text: "হুম",
+        timestamp: "2:56 PM",
+        type: "text",
+        status: "read",
+      },
+    ],
+  },
+  {
+    contactId: "contact-5",
+    messages: [
+      {
+        id: "m5_1",
+        sender: "me",
+        text: "Photo",
+        timestamp: "Yesterday",
+        type: "image",
+        status: "read",
+        fileUrl: "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=800&auto=format&fit=crop&q=80",
+        fileName: "Photo.jpg",
+      },
+    ],
+  },
+  {
+    contactId: "contact-6",
+    messages: [
+      {
+        id: "m6_1",
+        sender: "me",
+        text: "ওকে দাদা",
+        timestamp: "Yesterday",
+        type: "text",
+        status: "read",
+      },
+    ],
+  },
+  {
+    contactId: "contact-7",
+    messages: [
+      {
+        id: "m7_1",
+        sender: "them",
+        text: "Missed voice call",
+        timestamp: "Yesterday",
+        type: "text",
+        status: "read",
+      },
+    ],
+  },
+  {
+    contactId: "contact-8",
+    messages: [
+      {
+        id: "m8_1",
+        sender: "them",
+        text: "আজকে বাহিরে যাব না",
+        timestamp: "Yesterday",
+        type: "text",
+        status: "read",
+      },
+    ],
+  },
+];

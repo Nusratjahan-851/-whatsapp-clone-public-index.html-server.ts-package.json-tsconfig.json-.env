@@ -1,0 +1,10 @@
+{
+  "name": "Remix: Remix: Remix: Remix: Remix: WA Web Pro",
+  "description": "A feature-rich WhatsApp Web clone with real-time messaging, file sharing, notifications, and a sleek dark mode.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

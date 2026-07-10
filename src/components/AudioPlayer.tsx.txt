@@ -1,0 +1,166 @@
+import React, { useState, useRef, useEffect } from "react";
+import { Play, Pause, FileText, Loader2, Sparkles } from "lucide-react";
+import { Message } from "../types";
+
+interface AudioPlayerProps {
+  message: Message;
+  isDark: boolean;
+  onTranscribe: (messageId: string) => void;
+}
+
+export const AudioPlayer: React.FC<AudioPlayerProps> = ({ message, isDark, onTranscribe }) => {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [waveformBars, setWaveformBars] = useState<number[]>([]);
+
+  // Generate random waveform heights once
+  useEffect(() => {
+    const barsCount = 28;
+    const heights = Array.from({ length: barsCount }, () => Math.floor(Math.random() * 24) + 6);
+    setWaveformBars(heights);
+  }, []);
+
+  useEffect(() => {
+    if (message.fileUrl) {
+      const audio = new Audio(message.fileUrl);
+      audioRef.current = audio;
+
+      const handleTimeUpdate = () => {
+        setCurrentTime(audio.currentTime);
+      };
+
+      const handleLoadedMetadata = () => {
+        setDuration(audio.duration || 0);
+      };
+
+      const handleEnded = () => {
+        setIsPlaying(false);
+        setCurrentTime(0);
+      };
+
+      audio.addEventListener("timeupdate", handleTimeUpdate);
+      audio.addEventListener("loadedmetadata", handleLoadedMetadata);
+      audio.addEventListener("ended", handleEnded);
+
+      return () => {
+        audio.pause();
+        audio.removeEventListener("timeupdate", handleTimeUpdate);
+        audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+        audio.removeEventListener("ended", handleEnded);
+      };
+    }
+  }, [message.fileUrl]);
+
+  const togglePlay = () => {
+    if (!audioRef.current) return;
+    if (isPlaying) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      audioRef.current.play().catch((err) => console.warn("Failed to play audio:", err));
+      setIsPlaying(true);
+    }
+  };
+
+  const handleProgressBarClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!audioRef.current || duration === 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const width = rect.width;
+    const newPercentage = clickX / width;
+    const newTime = newPercentage * duration;
+    audioRef.current.currentTime = newTime;
+    setCurrentTime(newTime);
+  };
+
+  const formatTime = (time: number) => {
+    if (isNaN(time)) return "0:00";
+    const minutes = Math.floor(time / 60);
+    const seconds = Math.floor(time % 60);
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  };
+
+  const progressPercentage = duration > 0 ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <div className="flex flex-col gap-2 min-w-[240px] md:min-w-[280px]">
+      <div className="flex items-center gap-3">
+        {/* Play / Pause button */}
+        <button
+          onClick={togglePlay}
+          className={`flex items-center justify-center w-10 h-10 rounded-full transition-all shrink-0 ${
+            message.sender === "me"
+              ? isDark
+                ? "bg-[#005c4b] text-white hover:bg-[#007560]"
+                : "bg-[#00a884] text-white hover:bg-[#01755b]"
+              : isDark
+                ? "bg-[#202c33] text-[#00a884] hover:bg-[#2a3942]"
+                : "bg-white text-[#00a884] hover:bg-gray-100 shadow-sm"
+          }`}
+          id={`play-pause-btn-${message.id}`}
+        >
+          {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
+        </button>
+
+        {/* Waveform Visualization */}
+        <div className="flex-1 flex flex-col gap-1 justify-center">
+          <div
+            onClick={handleProgressBarClick}
+            className="flex items-end gap-[2px] h-8 cursor-pointer relative select-none"
+          >
+            {waveformBars.map((barHeight, idx) => {
+              const barProgress = (idx / waveformBars.length) * 100;
+              const isPlayed = barProgress <= progressPercentage;
+
+              let barColor = "bg-gray-300 dark:bg-gray-600";
+              if (isPlayed) {
+                barColor = message.sender === "me" ? "bg-white" : "bg-[#00a884]";
+              }
+
+              return (
+                <div
+                  key={idx}
+                  className={`w-[3px] rounded-t-sm transition-colors ${barColor}`}
+                  style={{ height: `${barHeight}px` }}
+                />
+              );
+            })}
+          </div>
+
+          <div className="flex justify-between items-center text-[10px] opacity-75">
+            <span>{formatTime(currentTime)}</span>
+            <span>{message.voiceDuration || formatTime(duration)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Transcription Layer */}
+      <div className="mt-1 border-t border-black/10 dark:border-white/10 pt-2 flex flex-col gap-1">
+        {message.transcription ? (
+          <div className="bg-black/5 dark:bg-white/5 rounded p-2 text-xs leading-relaxed italic border-l-2 border-[#00a884]">
+            <div className="flex items-center gap-1 font-semibold text-[10px] text-[#00a884] uppercase mb-1 tracking-wider">
+              <Sparkles size={10} /> Transcription (Gemini-3.5-Flash)
+            </div>
+            "{message.transcription}"
+          </div>
+        ) : message.isTranscribing ? (
+          <div className="flex items-center gap-1.5 text-xs opacity-75">
+            <Loader2 size={12} className="animate-spin text-[#00a884]" />
+            <span>Transcribing audio message...</span>
+          </div>
+        ) : (
+          <button
+            onClick={() => onTranscribe(message.id)}
+            className="flex items-center gap-1 text-[11px] font-medium text-[#00a884] dark:text-[#53bdeb] hover:underline self-start cursor-pointer"
+            id={`transcribe-btn-${message.id}`}
+          >
+            <FileText size={12} />
+            <span>Transcribe Audio (Speech-to-Text)</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
